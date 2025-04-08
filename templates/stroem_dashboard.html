@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block styles %}
+<style>
+    .progress-bar-width-custom {
+        width: 0%;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2 class="text-center mb-4">{{ translations['power_management'] }}</h2>
+
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">{{ translations['meter_info'] }}</h5>
+                    <div class="table-responsive">
+                        <table class="table table-borderless">
+                            <tr>
+                                <td>{{ translations['start_value'] }}:</td>
+                                <td class="text-end">{{ start_value }} {{ unit_text }}</td>
+                            </tr>
+                            <tr>
+                                <td>{{ translations['current_value'] }}:</td>
+                                <td class="text-end">{{ current_value }} {{ unit_text }}</td>
+                            </tr>
+                            <tr>
+                                <td>{{ translations['total_usage'] }}:</td>
+                                <td class="text-end">{{ total_usage }} {{ unit_text }}</td>
+                            </tr>
+                            <tr>
+                                <td>{{ translations['remaining'] }}:</td>
+                                <td class="text-end">{{ remaining }} {{ unit_text }}</td>
+                            </tr>
+                        </table>
+                    </div>
+                    <small class="text-muted">{{ translations['updated'] }}: {{ updated }}</small>
+                    
+                    <div class="mt-3">
+                        <p class="mb-2">
+                            <strong>Status: </strong>
+                            {% if power_switch_state == 'on' %}
+                                <span class="text-success">Tændt</span>
+                            {% elif power_switch_state == 'off' %}
+                                <span class="text-danger">Slukket</span>
+                            {% else %}
+                                <span class="text-secondary">Ukendt</span>
+                            {% endif %}
+                        </p>
+                        <div class="d-flex justify-content-between">
+                            <form action="{{ url_for('toggle_power') }}" method="POST" class="w-100 me-2">
+                                <input type="hidden" name="action" value="on">
+                                <input type="hidden" name="switch_id" value="{{ power_switch_id }}">
+                                <button type="submit" class="btn btn-success w-100 {% if power_switch_state == 'on' %}disabled{% endif %}">
+                                    <i class="fas fa-power-off"></i> Tænd
+                                </button>
+                            </form>
+                            <form action="{{ url_for('toggle_power') }}" method="POST" class="w-100 ms-2">
+                                <input type="hidden" name="action" value="off">
+                                <input type="hidden" name="switch_id" value="{{ power_switch_id }}">
+                                <button type="submit" class="btn btn-danger w-100 {% if power_switch_state == 'off' %}disabled{% endif %}">
+                                    <i class="fas fa-power-off"></i> Sluk
+                                </button>
+                            </form>
+                        </div>
+                        <div class="mt-2 small text-center text-muted">
+                            Grundet sikkerhed skal du genindlæse din browser for at du kan aktivere en knap igen
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">{{ translations['package_info'] }}</h5>
+                    
+                    {% set percentage = (total_usage|float / package_size|float * 100)|round %}
+                    {% if percentage > 90 %}
+                        {% set bar_class = "progress-bar bg-danger" %}
+                    {% elif percentage > 75 %}
+                        {% set bar_class = "progress-bar bg-warning" %}
+                    {% else %}
+                        {% set bar_class = "progress-bar bg-success" %}
+                    {% endif %}
+                    
+                    <div class="progress mb-3">
+                        <div class="{{ bar_class }} progress-bar-width-custom" role="progressbar" aria-valuenow="{{ percentage }}" aria-valuemin="0" aria-valuemax="100" id="usage-bar">
+                            {{ percentage }}%
+                        </div>
+                    </div>
+                    
+                    <p class="text-center">
+                        {{ remaining }} {{ unit_text }} {{ translations['remaining_of'] }} {{ package_size|int }} {{ unit_text }}
+                    </p>
+                    
+                    <div class="text-center mt-3">
+                        <a href="{{ url_for('select_package') }}" class="btn btn-primary">
+                            Køb tillægspakke
+                        </a>
+                        <div class="mt-2">
+                            <a href="{{ url_for('index') }}" class="btn btn-secondary">
+                                <i class="fas fa-home"></i> Tilbage til forsiden
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        var progressBar = document.getElementById('usage-bar');
+        /* Bruger procentværdien fra Python */
+        progressBar.style.width = '{{ percentage|default(0) }}%';
+    });
+</script>
+{% endblock %}

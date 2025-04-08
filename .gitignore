@@ -1,0 +1,34 @@
+# Virtuelle miljøer
+venv/
+new_venv/
+env/
+.env
+
+# Python cache filer
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+
+# Database konfigurations filer med følsomme data
+*.db
+*.sqlite
+
+# IDE filer
+.idea/
+.vscode/
+
+# Miljøvariabler
+.env
+.env.*
+
+# Sessioner
+flask_session/
+
+# macOS specifikke filer
+.DS_Store
+
+# Windows specifikke filer
+Thumbs.db

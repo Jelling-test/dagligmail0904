@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2 class="text-center mb-4">{{ translations['select_meter'] }}</h2>
+
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="input-group mb-3">
+                <input type="text" id="searchInput" class="form-control" placeholder="{{ translations['search_meter'] }}" list="meterSuggestions">
+                <datalist id="meterSuggestions">
+                    {% for meter in meters %}
+                    <option value="{{ meter.name }}">
+                    {% endfor %}
+                </datalist>
+            </div>
+
+            <form method="POST" action="{{ url_for('select_meter') }}">
+                <div class="list-group mb-3" id="meterList">
+                    {% for meter in meters %}
+                    <div class="list-group-item meter-item" data-name="{{ meter.name.lower() }}" data-id="{{ meter.id }}">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="meter_id" value="{{ meter.id }}" id="meter{{ loop.index }}" {% if loop.first and meters|length > 0 %}checked{% endif %}>
+                            <label class="form-check-label" for="meter{{ loop.index }}">
+                                {{ meter.name }} ({{ meter.state }} {{ meter.unit }})
+                            </label>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+
+                <button type="submit" class="btn btn-primary btn-lg w-100 mt-4 mb-4" style="font-size: 1.2rem; padding: 15px;">Vælg måler og gå videre</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('searchInput').addEventListener('input', function(e) {
+    const searchText = e.target.value.toLowerCase();
+    const meters = document.querySelectorAll('#meterList .meter-item');
+    
+    // Opdater forslagslisten baseret på det aktuelle input
+    const suggestionsDatalist = document.getElementById('meterSuggestions');
+    suggestionsDatalist.innerHTML = '';  // Ryd eksisterende forslag
+    
+    let matchCount = 0;
+    
+    meters.forEach(meter => {
+        const meterName = meter.getAttribute('data-name');
+        if (meterName.includes(searchText)) {
+            meter.style.display = '';
+            
+            // Tilføj til forslagslisten hvis den matchede teksten
+            if (matchCount < 10) {  // Begræns antal forslag til 10
+                const option = document.createElement('option');
+                option.value = meter.querySelector('label').textContent.split(' (')[0];  // Kun målernavnet uden status og enhed
+                suggestionsDatalist.appendChild(option);
+                matchCount++;
+            }
+        } else {
+            meter.style.display = 'none';
+        }
+    });
+    
+    // Hvis der ikke er input, vis alle målere
+    if (searchText === '') {
+        meters.forEach(meter => {
+            meter.style.display = '';
+        });
+    }
+});
+
+// Auto-vælg måleren hvis brugeren vælger fra forslag
+document.getElementById('searchInput').addEventListener('change', function(e) {
+    const selectedName = e.target.value;
+    const meters = document.querySelectorAll('#meterList .meter-item');
+    
+    meters.forEach(meter => {
+        const labelText = meter.querySelector('label').textContent;
+        if (labelText.startsWith(selectedName)) {
+            meter.querySelector('input').checked = true;
+        }
+    });
+});
+</script>
+{% endblock %}

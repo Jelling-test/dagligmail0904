@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block content %}
+{% if current_user.is_authenticated %}
+    <div class="row mb-4">
+        <div class="col-12 text-center mb-4">
+            <div class="btn-group language-flags" role="group">
+                <a href="{{ url_for('set_language', lang='da') }}" class="btn {% if session.language == 'da' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Dansk">
+                    <img src="{{ url_for('static', filename='images/flags/dk.png') }}" width="32" alt="Dansk flag">
+                </a>
+                <a href="{{ url_for('set_language', lang='en') }}" class="btn {% if session.language == 'en' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="English">
+                    <img src="{{ url_for('static', filename='images/flags/gb.png') }}" width="32" alt="British flag">
+                </a>
+                <a href="{{ url_for('set_language', lang='de') }}" class="btn {% if session.language == 'de' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Deutsch">
+                    <img src="{{ url_for('static', filename='images/flags/de.png') }}" width="32" alt="Deutsche flagge">
+                </a>
+                <a href="{{ url_for('set_language', lang='nl') }}" class="btn {% if session.language == 'nl' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Nederlands">
+                    <img src="{{ url_for('static', filename='images/flags/nl.png') }}" width="32" alt="Nederlandse vlag">
+                </a>
+                <a href="{{ url_for('set_language', lang='pl') }}" class="btn {% if session.language == 'pl' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Polski">
+                    <img src="{{ url_for('static', filename='images/flags/pl.png') }}" width="32" alt="Polska flaga">
+                </a>
+                <a href="{{ url_for('set_language', lang='fi') }}" class="btn {% if session.language == 'fi' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Suomi">
+                    <img src="{{ url_for('static', filename='images/flags/fi.png') }}" width="32" alt="Suomen lippu">
+                </a>
+                <a href="{{ url_for('set_language', lang='fr') }}" class="btn {% if session.language == 'fr' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Français">
+                    <img src="{{ url_for('static', filename='images/flags/fr.png') }}" width="32" alt="Drapeau français">
+                </a>
+            </div>
+        </div>
+        
+        <div class="col-12 text-center mb-3">
+            <h3>{{ translations['welcome'] }} {{ current_user.fornavn }} {{ current_user.efternavn }}</h3>
+        </div>
+    </div>
+
+    <div class="row mb-4 justify-content-center">
+        <div class="col-md-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <h3 class="card-title">⚡ {{ translations['power_management'] }}</h3>
+                    <p class="card-text">{{ translations['manage_power'] }}</p>
+                    <a href="{{ url_for('stroem_dashboard') }}" class="btn btn-primary">{{ translations['power_management'] }}</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-12 text-center">
+            <a href="{{ url_for('logout') }}" class="btn btn-outline-danger">{{ translations['logout_button'] }}</a>
+        </div>
+    </div>
+{% else %}
+    <div class="row justify-content-center">
+        <div class="col-md-8 text-center">
+            <div class="mb-4">
+                <div class="btn-group language-flags" role="group">
+                    <a href="{{ url_for('set_language', lang='da') }}" class="btn {% if session.language == 'da' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Dansk">
+                        <img src="{{ url_for('static', filename='images/flags/dk.png') }}" width="32" alt="Dansk flag">
+                    </a>
+                    <a href="{{ url_for('set_language', lang='en') }}" class="btn {% if session.language == 'en' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="English">
+                        <img src="{{ url_for('static', filename='images/flags/gb.png') }}" width="32" alt="British flag">
+                    </a>
+                    <a href="{{ url_for('set_language', lang='de') }}" class="btn {% if session.language == 'de' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Deutsch">
+                        <img src="{{ url_for('static', filename='images/flags/de.png') }}" width="32" alt="Deutsche flagge">
+                    </a>
+                    <a href="{{ url_for('set_language', lang='nl') }}" class="btn {% if session.language == 'nl' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Nederlands">
+                        <img src="{{ url_for('static', filename='images/flags/nl.png') }}" width="32" alt="Nederlandse vlag">
+                    </a>
+                    <a href="{{ url_for('set_language', lang='pl') }}" class="btn {% if session.language == 'pl' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Polski">
+                        <img src="{{ url_for('static', filename='images/flags/pl.png') }}" width="32" alt="Polska flaga">
+                    </a>
+                    <a href="{{ url_for('set_language', lang='fi') }}" class="btn {% if session.language == 'fi' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Suomi">
+                        <img src="{{ url_for('static', filename='images/flags/fi.png') }}" width="32" alt="Suomen lippu">
+                    </a>
+                    <a href="{{ url_for('set_language', lang='fr') }}" class="btn {% if session.language == 'fr' %}btn-primary{% else %}btn-outline-primary{% endif %}" title="Français">
+                        <img src="{{ url_for('static', filename='images/flags/fr.png') }}" width="32" alt="Drapeau français">
+                    </a>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-body">
+                    <h4>{{ translations['welcome'] }}</h4>
+                    <p>{{ translations['login_prompt'] }}</p>
+                    <a href="{{ url_for('login') }}" class="btn btn-primary">{{ translations['login_button'] }}</a>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endif %}
+{% endblock %}
+
+{% block styles %}
+<style>
+.language-flags .btn {
+    padding: 0.5rem;
+    margin: 0 0.2rem;
+    border-radius: 50%;
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.language-flags .btn:hover {
+    transform: scale(1.1);
+    transition: transform 0.2s;
+}
+
+.language-flags .btn img {
+    border-radius: 50%;
+    object-fit: cover;
+}
+</style>
+{% endblock %}

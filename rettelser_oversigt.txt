@@ -1,0 +1,49 @@
+# Oversigt over nødvendige rettelser i app.py
+
+## 1. Indlæsning af miljøvariabler fra .env filen
+Placering: I begyndelsen af filen efter kommentarerne
+
+```python
+from dotenv import load_dotenv
+load_dotenv()  # Indlæser variabler fra .env fil
+```
+
+Denne rettelse sikrer, at alle dine miljøvariabler fra .env-filen bliver indlæst korrekt, herunder database-oplysninger (DB_USER, DB_PASSWORD), HASS_URL, HASS_TOKEN osv.
+
+## 2. Sikker håndtering af databaseforbindelser i load_user funktionen
+Placering: I load_user funktionen, i finally-blokken
+
+```python
+finally:
+    if conn and hasattr(conn, 'is_connected') and conn.is_connected():
+        safe_close_connection(conn)
+```
+
+Dette retter en fejl, hvor koden fejlede med "AttributeError: 'NoneType' object has no attribute 'open'" når conn var None. Nu bruger den samme sikre metode som i safe_close_connection-funktionen.
+
+## 3. Rettelse af admin_login_or_dashboard referencer
+Placering: I index-funktionen og alle andre steder, hvor der er en reference til 'admin_login_or_dashboard'
+
+```python
+# I index funktionen:
+if getattr(current_user,'is_admin',False):
+    # Omdiriger til admin-dashboard
+    return redirect(url_for('admin_dashboard'))
+```
+
+```python
+# I admin funktioner der returnerer til admin dashboard:
+return redirect(url_for('admin_dashboard'))
+```
+
+Dette ændrer alle henvisninger til den ikke-eksisterende 'admin_login_or_dashboard' funktion til den korrekte 'admin_dashboard' funktion.
+
+## 4. Andre små rettelser
+- Sørg for at admin_add_units funktionen håndterer SQL-fejl korrekt
+- Sørg for at admin_remove_meter funktionen har korrekt logning
+- Kontroller at cacheringen med @cache.cached er korrekt konfigureret
+
+## Generelle anbefalinger
+1. Gennemgå alle funktioner der indeholder 'admin_login_or_dashboard' og erstat med 'admin_dashboard'
+2. Test alle admin-funktioner for at sikre, at de fungerer korrekt
+3. Kontroller, at der er korrekt fejlhåndtering i alle databaseoperationer

@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <h1 class="mb-4">Administrator Dashboard</h1>
+            
+            {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+            {% endwith %}
+            
+            <div class="card mb-4">
+                <div class="card-header bg-primary text-white">
+                    <h3>Brugeradministration</h3>
+                </div>
+                <div class="card-body">
+                    <ul class="nav nav-tabs" id="adminTabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="add-units-tab" data-bs-toggle="tab" data-bs-target="#add-units" type="button" role="tab" aria-controls="add-units" aria-selected="true">Tilføj enheder</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="remove-meter-tab" data-bs-toggle="tab" data-bs-target="#remove-meter" type="button" role="tab" aria-controls="remove-meter" aria-selected="false">Fjern måler</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="connect-meter-tab" data-bs-toggle="tab" data-bs-target="#connect-meter" type="button" role="tab" aria-controls="connect-meter" aria-selected="false">Tilknyt måler</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="adjust-price-tab" data-bs-toggle="tab" data-bs-target="#adjust-price" type="button" role="tab" aria-controls="adjust-price" aria-selected="false">Juster priser</button>
+                        </li>
+                    </ul>
+                    <div class="tab-content p-3 border border-top-0 rounded-bottom" id="adminTabsContent">
+                        <!-- Tilføj enheder fane -->
+                        <div class="tab-pane fade show active" id="add-units" role="tabpanel" aria-labelledby="add-units-tab">
+                            <h4>Tilføj enheder til bruger</h4>
+                            <form method="POST" action="{{ url_for('admin_add_units') }}">
+                                <div class="mb-3">
+                                    <label for="booking_id" class="form-label">Booking ID</label>
+                                    <input type="text" class="form-control" id="booking_id" name="booking_id" required>
+                                    <small class="form-text text-muted">Systemet finder automatisk brugerens måler</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="units" class="form-label">Antal enheder at tilføje</label>
+                                    <input type="number" class="form-control" id="units" name="units" required min="1">
+                                </div>
+                                <button type="submit" class="btn btn-primary">Tilføj enheder</button>
+                            </form>
+                        </div>
+                        
+                        <!-- Fjern måler fane -->
+                        <div class="tab-pane fade" id="remove-meter" role="tabpanel" aria-labelledby="remove-meter-tab">
+                            <h4>Fjern måler fra bruger</h4>
+                            <form method="POST" action="{{ url_for('admin_remove_meter') }}">
+                                <div class="mb-3">
+                                    <label for="booking_id_remove" class="form-label">Booking ID</label>
+                                    <input type="text" class="form-control" id="booking_id_remove" name="booking_id" required>
+                                    <small class="form-text text-muted">Systemet finder automatisk brugerens måler</small>
+                                </div>
+                                <div id="meter_info" class="mb-3 d-none">
+                                    <h5>Tilknyttet måler:</h5>
+                                    <p id="meter_display" class="p-2 bg-light border rounded"></p>
+                                    <input type="hidden" id="meter_id_remove" name="meter_id">
+                                </div>
+                                <button type="button" id="find_meter_btn" class="btn btn-info mb-3">Find måler</button>
+                                <button type="submit" id="remove_meter_btn" class="btn btn-danger d-none">Fjern måler</button>
+                            </form>
+                        </div>
+                        
+                        <!-- Tilknyt måler fane -->
+                        <div class="tab-pane fade" id="connect-meter" role="tabpanel" aria-labelledby="connect-meter-tab">
+                            <h4>Tilknyt måler til bruger</h4>
+                            <form method="POST" action="{{ url_for('admin_connect_meter') }}">
+                                <div class="mb-3">
+                                    <label for="booking_id_connect" class="form-label">Booking ID</label>
+                                    <input type="text" class="form-control" id="booking_id_connect" name="connect_booking_id" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="meter_id_connect" class="form-label">Vælg måler</label>
+                                    <select class="form-select" id="meter_id_connect" name="connect_meter_id" required>
+                                        <option value="">Vælg en måler...</option>
+                                    </select>
+                                    <small class="form-text text-muted">Kun ledige målere vises i listen</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="package_size" class="form-label">Antal enheder</label>
+                                    <input type="number" class="form-control" id="package_size" name="connect_package_size" required min="1" step="0.1" value="100">
+                                    <small class="form-text text-muted">Angiv pakkestørrelsen i enheder som brugeren skal have</small>
+                                </div>
+                                <button type="submit" class="btn btn-success">Tilknyt måler</button>
+                            </form>
+                        </div>
+                        
+                        <!-- Juster priser fane -->
+                        <div class="tab-pane fade" id="adjust-price" role="tabpanel" aria-labelledby="adjust-price-tab">
+                            <h4>Juster priser på strømpakker</h4>
+                            <form method="POST" action="{{ url_for('admin_adjust_prices') }}">
+                                <div class="table-responsive">
+                                    <table class="table table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>Pakke ID</th>
+                                                <th>Pakkenavn</th>
+                                                <th>Enheder</th>
+                                                <th>Nuværende pris (DKK)</th>
+                                                <th>Ny pris (DKK)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for package in packages %}
+                                            <tr>
+                                                <td>{{ package.id }}</td>
+                                                <td>{{ package.navn }}</td>
+                                                <td>{{ package.enheder }}</td>
+                                                <td>{{ package.pris }}</td>
+                                                <td>
+                                                    <input type="number" class="form-control" name="price_{{ package.id }}" value="{{ package.pris }}" min="0" step="0.01">
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <button type="submit" class="btn btn-warning">Opdater priser</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mt-4">
+                <div class="list-group">
+                    <a href="{{ url_for('system_admin_settings') }}" class="list-group-item list-group-item-action">Systemindstillinger</a>
+                    <a href="{{ url_for('admin_meter_config') }}" class="list-group-item list-group-item-action">Konfigurer Målere</a>
+                    <a href="{{ url_for('logout') }}" class="list-group-item list-group-item-action">Log ud</a>
+                </div>
+                <a href="{{ url_for('index') }}" class="btn btn-secondary">Tilbage til forsiden</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Find måler knap
+        const findMeterBtn = document.getElementById('find_meter_btn');
+        const bookingInput = document.getElementById('booking_id_remove');
+        const meterInfo = document.getElementById('meter_info');
+        const meterDisplay = document.getElementById('meter_display');
+        const meterIdInput = document.getElementById('meter_id_remove');
+        const removeMeterBtn = document.getElementById('remove_meter_btn');
+        
+        if (findMeterBtn) {
+            findMeterBtn.addEventListener('click', function() {
+                const bookingId = bookingInput.value.trim();
+                if (!bookingId) {
+                    alert('Indtast venligst et booking ID');
+                    return;
+                }
+                
+                // Simulerer AJAX-kald - i en rigtig implementering ville dette være et fetch-kald til serveren
+                fetch(`/systemkontrolcenter23/get-meter?booking_id=${bookingId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success && data.meter) {
+                            meterDisplay.textContent = `Måler: ${data.meter.name || data.meter.meter_id} (ID: ${data.meter.meter_id})`;
+                            meterIdInput.value = data.meter.meter_id;
+                            meterInfo.classList.remove('d-none');
+                            removeMeterBtn.classList.remove('d-none');
+                        } else {
+                            alert(data.message || 'Ingen måler fundet for denne booking');
+                            meterInfo.classList.add('d-none');
+                            removeMeterBtn.classList.add('d-none');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Fejl ved hentning af måler:', error);
+                        alert('Der opstod en fejl ved hentning af måler');
+                    });
+            });
+        }
+        
+        // For Tilknyt måler-fanen
+        const bookingIdConnectInput = document.getElementById('booking_id_connect');
+        const meterSelect = document.getElementById('meter_id_connect');
+        
+        // Load ledige målere, når fanen bliver aktiveret
+        const connectMeterTab = document.getElementById('connect-meter-tab');
+        if (connectMeterTab) {
+            connectMeterTab.addEventListener('click', loadAvailableMeters);
+        }
+        
+        function loadAvailableMeters() {
+            // Ryd nuværende liste
+            meterSelect.innerHTML = '<option value="">Vælg en måler...</option>';
+            
+            // Hent ledige målere
+            fetch('/systemkontrolcenter23/get-available-meters')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const meters = data.meters;
+                        meters.forEach(meter => {
+                            const option = document.createElement('option');
+                            option.value = meter.id;
+                            option.textContent = `${meter.name} (${meter.current_value} kWh)`;
+                            meterSelect.appendChild(option);
+                        });
+                        
+                        if (meters.length === 0) {
+                            const option = document.createElement('option');
+                            option.value = "";
+                            option.textContent = "Ingen ledige målere";
+                            option.disabled = true;
+                            meterSelect.appendChild(option);
+                        }
+                    } else {
+                        alert('Fejl ved hentning af ledige målere: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('Fejl:', error);
+                    alert('Der opstod en fejl ved hentning af ledige målere.');
+                });
+        }
+    });
+</script>
+{% endblock %}

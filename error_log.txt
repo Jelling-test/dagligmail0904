@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "C:\Users\peter\Desktop\07.04 strømstyring\velkomstside 29.03\debug_importer.py", line 2, in <module>
+    import app
+  File "C:\Users\peter\Desktop\07.04 strømstyring\velkomstside 29.03\app.py", line 1091, in <module>
+    @app.route('/admin_connect_meter', methods=['POST'])
+     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\peter\Desktop\07.04 strømstyring\velkomstside 29.03\new_venv\Lib\site-packages\flask\scaffold.py", line 449, in decorator
+    self.add_url_rule(rule, endpoint, f, **options)
+  File "C:\Users\peter\Desktop\07.04 strømstyring\velkomstside 29.03\new_venv\Lib\site-packages\flask\scaffold.py", line 50, in wrapper_func
+    return f(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\peter\Desktop\07.04 strømstyring\velkomstside 29.03\new_venv\Lib\site-packages\flask\app.py", line 1361, in add_url_rule
+    raise AssertionError(
+AssertionError: View function mapping is overwriting an existing endpoint function: admin_connect_meter

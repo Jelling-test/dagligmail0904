@@ -1,0 +1,10 @@
+.progress {
+    height: 25px;
+}
+
+.progress-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+}

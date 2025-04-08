@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2 class="text-center mb-4">Konfigurer Målere</h2>
+    
+    <div class="row">
+        <div class="col-md-12 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Eksisterende Målerkonfigurationer</h5>
+                </div>
+                <div class="card-body">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Sensor ID</th>
+                                <th>Visningsnavn</th>
+                                <th>Placering</th>
+                                <th>Energi sensor</th>
+                                <th>Strømafbryder</th>
+                                <th>Aktiv</th>
+                                <th>Handlinger</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for meter in configured_meters %}
+                            <tr>
+                                <td>{{ meter.id }}</td>
+                                <td>{{ meter.sensor_id }}</td>
+                                <td>{{ meter.display_name }}</td>
+                                <td>{{ meter.location }}</td>
+                                <td>{{ meter.energy_sensor_id }}</td>
+                                <td>{{ meter.power_switch_id }}</td>
+                                <td>{{ "Ja" if meter.is_active else "Nej" }}</td>
+                                <td>
+                                    <button type="button" class="btn btn-sm btn-primary edit-btn" 
+                                            data-id="{{ meter.id }}"
+                                            data-sensor-id="{{ meter.sensor_id }}"
+                                            data-display-name="{{ meter.display_name }}"
+                                            data-location="{{ meter.location or '' }}"
+                                            data-energy-sensor-id="{{ meter.energy_sensor_id or '' }}"
+                                            data-power-switch-id="{{ meter.power_switch_id or '' }}"
+                                            data-active="{{ '1' if meter.is_active else '0' }}">
+                                        Redigér
+                                    </button>
+                                    <form style="display: inline;" method="POST" action="{{ url_for('delete_meter_config', config_id=meter.id) }}" 
+                                          onsubmit="return confirm('Er du sikker på at du vil slette denne konfiguration?');">
+                                        <button type="submit" class="btn btn-sm btn-danger">Slet</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-md-12 mb-4">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 id="form-title">Tilføj Ny Målerkonfiguration</h5>
+                    <button id="clear-form" class="btn btn-sm btn-secondary">Ryd Formular</button>
+                </div>
+                <div class="card-body">
+                    <form id="meter-config-form" method="POST" action="{{ url_for('admin_meter_config') }}">
+                        <input type="hidden" id="meter_id" name="meter_id">
+                        
+                        <div class="form-group row mb-3">
+                            <label for="sensor_id" class="col-sm-3 col-form-label">Sensor ID:</label>
+                            <div class="col-sm-9">
+                                <input type="text" class="form-control" id="sensor_id" name="sensor_id" required>
+                                <small class="form-text text-muted">Base ID for måleren (f.eks. sensor.obkBFBFD7F0)</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <label for="display_name" class="col-sm-3 col-form-label">Visningsnavn:</label>
+                            <div class="col-sm-9">
+                                <input type="text" class="form-control" id="display_name" name="display_name" required>
+                                <small class="form-text text-muted">Brugervenligt navn (f.eks. "Strømstander 7")</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <label for="location" class="col-sm-3 col-form-label">Placering:</label>
+                            <div class="col-sm-9">
+                                <input type="text" class="form-control" id="location" name="location">
+                                <small class="form-text text-muted">Placering (f.eks. "Plads 42-46")</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <label for="energy_sensor_id" class="col-sm-3 col-form-label">Energi Sensor ID:</label>
+                            <div class="col-sm-9">
+                                <input type="text" class="form-control" id="energy_sensor_id" name="energy_sensor_id">
+                                <small class="form-text text-muted">Specifik sensor til energimåling (f.eks. sensor.obkBFBFD7F0_energy_total)</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <label for="power_switch_id" class="col-sm-3 col-form-label">Strømafbryder ID:</label>
+                            <div class="col-sm-9">
+                                <input type="text" class="form-control" id="power_switch_id" name="power_switch_id">
+                                <small class="form-text text-muted">ID for tænd/sluk kontakten (f.eks. switch.obkBFBFD7F0_0)</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <div class="col-sm-3">Aktiv:</div>
+                            <div class="col-sm-9">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="is_active" name="is_active" checked>
+                                    <label class="form-check-label" for="is_active">
+                                        Vis denne måler for brugerne
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row">
+                            <div class="col-sm-9 offset-sm-3">
+                                <button type="submit" class="btn btn-primary" id="submit-btn">Gem Konfiguration</button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Tilgængelige Sensorer</h5>
+                </div>
+                <div class="card-body">
+                    <div class="accordion" id="sensorGroupsAccordion">
+                        {% for group_name, sensors in sensor_groups.items() %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="heading{{ loop.index }}">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                                        data-bs-target="#collapse{{ loop.index }}" aria-expanded="false" 
+                                        aria-controls="collapse{{ loop.index }}">
+                                    Måler: {{ group_name }} ({{ sensors|length }} sensorer)
+                                </button>
+                            </h2>
+                            <div id="collapse{{ loop.index }}" class="accordion-collapse collapse" 
+                                 aria-labelledby="heading{{ loop.index }}" data-bs-parent="#sensorGroupsAccordion">
+                                <div class="accordion-body">
+                                    <table class="table table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>Sensor ID</th>
+                                                <th>Navn</th>
+                                                <th>Værdi</th>
+                                                <th>Enhed</th>
+                                                <th>Handling</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for sensor in sensors %}
+                                            <tr>
+                                                <td>{{ sensor.id }}</td>
+                                                <td>{{ sensor.name }}</td>
+                                                <td>{{ sensor.state }}</td>
+                                                <td>{{ sensor.unit }}</td>
+                                                <td>
+                                                    <button class="btn btn-sm btn-outline-primary use-sensor-btn" 
+                                                            data-sensor-id="{{ sensor.id }}"
+                                                            data-sensor-base="{{ group_name }}">
+                                                        Brug Denne
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                    <div class="mt-3">
+                                        <button class="btn btn-primary configure-group-btn" 
+                                                data-sensor-base="{{ group_name }}"
+                                                data-sensor-id="sensor.{{ group_name }}"
+                                                data-energy-id="sensor.{{ group_name }}_energy_total"
+                                                data-power-id="switch.{{ group_name }}_0">
+                                            Konfigurer Denne Måler
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <a href="{{ url_for('admin_login_or_dashboard') }}" class="btn btn-secondary">Tilbage til Admin Dashboard</a>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Håndter redigér-knapper
+    document.querySelectorAll('.edit-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const id = this.getAttribute('data-id');
+            const sensorId = this.getAttribute('data-sensor-id');
+            const displayName = this.getAttribute('data-display-name');
+            const location = this.getAttribute('data-location');
+            const energySensorId = this.getAttribute('data-energy-sensor-id');
+            const powerSwitchId = this.getAttribute('data-power-switch-id');
+            const isActive = this.getAttribute('data-active') === '1';
+            
+            document.getElementById('form-title').textContent = 'Redigér Målerkonfiguration';
+            document.getElementById('meter_id').value = id;
+            document.getElementById('sensor_id').value = sensorId;
+            document.getElementById('display_name').value = displayName;
+            document.getElementById('location').value = location;
+            document.getElementById('energy_sensor_id').value = energySensorId;
+            document.getElementById('power_switch_id').value = powerSwitchId;
+            document.getElementById('is_active').checked = isActive;
+            
+            document.getElementById('submit-btn').textContent = 'Opdater Konfiguration';
+            
+            // Scroll til formularen
+            document.getElementById('meter-config-form').scrollIntoView({behavior: 'smooth'});
+        });
+    });
+    
+    // Håndter "Ryd Formular" knap
+    document.getElementById('clear-form').addEventListener('click', function() {
+        document.getElementById('form-title').textContent = 'Tilføj Ny Målerkonfiguration';
+        document.getElementById('meter-config-form').reset();
+        document.getElementById('meter_id').value = '';
+        document.getElementById('submit-btn').textContent = 'Gem Konfiguration';
+    });
+    
+    // Håndter "Brug Denne" knap for individuelle sensorer
+    document.querySelectorAll('.use-sensor-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const sensorId = this.getAttribute('data-sensor-id');
+            
+            // Indsæt sensor-ID i det relevante felt baseret på sensornavn
+            if (sensorId.includes('energy_total')) {
+                document.getElementById('energy_sensor_id').value = sensorId;
+            } else if (sensorId.includes('switch') || sensorId.includes('_0')) {
+                document.getElementById('power_switch_id').value = sensorId;
+            } else {
+                // Hvis det ikke er energi eller switch, sæt det som base sensor
+                document.getElementById('sensor_id').value = sensorId;
+            }
+            
+            // Scroll til formularen
+            document.getElementById('meter-config-form').scrollIntoView({behavior: 'smooth'});
+        });
+    });
+    
+    // Håndter "Konfigurer Denne Måler" knappen for målergrupper
+    document.querySelectorAll('.configure-group-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const sensorBase = this.getAttribute('data-sensor-base');
+            const sensorId = this.getAttribute('data-sensor-id');
+            const energyId = this.getAttribute('data-energy-id');
+            const powerId = this.getAttribute('data-power-id');
+            
+            // Udfyld formularen med forslag
+            document.getElementById('sensor_id').value = sensorId;
+            document.getElementById('display_name').value = 'Strømstander ' + sensorBase.replace('obk', '');
+            document.getElementById('energy_sensor_id').value = energyId;
+            document.getElementById('power_switch_id').value = powerId;
+            
+            // Ryd eventuel tidligere meter_id for at lave en ny konfiguration
+            document.getElementById('meter_id').value = '';
+            document.getElementById('form-title').textContent = 'Tilføj Ny Målerkonfiguration';
+            document.getElementById('submit-btn').textContent = 'Gem Konfiguration';
+            
+            // Scroll til formularen
+            document.getElementById('meter-config-form').scrollIntoView({behavior: 'smooth'});
+        });
+    });
+});
+</script>
+{% endblock %}

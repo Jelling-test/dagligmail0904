@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2 class="text-center mb-4">Systemindstillinger</h2>
+    
+    {% if message %}
+    <div class="alert alert-{{ message_type }}">{{ message }}</div>
+    {% endif %}
+    
+    <div class="row">
+        <!-- Home Assistant API Indstillinger -->
+        <div class="col-md-12 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Home Assistant API Indstillinger</h5>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('system_admin_settings') }}">
+                        <div class="form-group row mb-3">
+                            <label for="hass_url" class="col-sm-3 col-form-label">Home Assistant URL:</label>
+                            <div class="col-sm-9">
+                                <input type="text" class="form-control" id="hass_url" name="hass_url" value="{{ settings.hass_url }}" required>
+                                <small class="form-text text-muted">URL til din Home Assistant, f.eks. http://homeassistant.local:8123</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <label for="hass_token" class="col-sm-3 col-form-label">Access Token:</label>
+                            <div class="col-sm-9">
+                                <input type="password" class="form-control" id="hass_token" name="hass_token" value="{{ settings.hass_token }}" required>
+                                <small class="form-text text-muted">Long-lived access token genereret i Home Assistant</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row">
+                            <div class="col-sm-9 offset-sm-3">
+                                <button type="submit" class="btn btn-primary">Gem API Indstillinger</button>
+                                <button type="button" class="btn btn-info test-hass-btn">Test Forbindelse</button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Systemparametre -->
+        <!-- Denne sektion er fjernet da den ikke bruges i systemet -->
+        
+        <!-- Admin Login Indstillinger -->
+        <div class="col-md-12 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Admin Login Indstillinger</h5>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('system_admin_settings') }}">
+                        <div class="form-group row mb-3">
+                            <label for="admin_username" class="col-sm-3 col-form-label">Admin Brugernavn:</label>
+                            <div class="col-sm-9">
+                                <input type="text" class="form-control" id="admin_username" name="admin_username" value="{{ settings.admin_username }}" required>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <label for="admin_password" class="col-sm-3 col-form-label">Nyt Admin Password:</label>
+                            <div class="col-sm-9">
+                                <input type="password" class="form-control" id="admin_password" name="admin_password" placeholder="Indtast kun hvis du vil ændre password">
+                                <small class="form-text text-muted">Lad dette felt være tomt, hvis du ikke vil ændre password</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <label for="admin_password_confirm" class="col-sm-3 col-form-label">Bekræft Password:</label>
+                            <div class="col-sm-9">
+                                <input type="password" class="form-control" id="admin_password_confirm" name="admin_password_confirm" placeholder="Bekræft nyt password">
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row">
+                            <div class="col-sm-9 offset-sm-3">
+                                <button type="submit" class="btn btn-primary">Opdater Admin Legitimation</button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-md-12 mb-4">
+            <a href="{{ url_for('admin_login_or_dashboard') }}" class="btn btn-secondary">Tilbage til Admin Dashboard</a>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Test Home Assistant forbindelse
+    document.querySelector('.test-hass-btn').addEventListener('click', function() {
+        const url = document.getElementById('hass_url').value;
+        const token = document.getElementById('hass_token').value;
+        
+        if (!url || !token) {
+            alert('Både URL og token skal udfyldes for at teste forbindelsen');
+            return;
+        }
+        
+        this.textContent = 'Tester...';
+        this.disabled = true;
+        
+        fetch('{{ url_for("test_hass_connection") }}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                url: url,
+                token: token
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Forbindelse til Home Assistant etableret! ' + data.message);
+            } else {
+                alert('Fejl: ' + data.message);
+            }
+        })
+        .catch(error => {
+            alert('Der opstod en fejl: ' + error);
+        })
+        .finally(() => {
+            this.textContent = 'Test Forbindelse';
+            this.disabled = false;
+        });
+    });
+});
+</script>
+{% endblock %}

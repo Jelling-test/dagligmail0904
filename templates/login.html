@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h4 class="card-title text-center mb-4">{{ translations['login_button'] }}</h4>
+                <form method="POST" action="{{ url_for('login') }}">
+                    <div class="mb-3">
+                        <label for="booking_id" class="form-label">{{ translations['booking_number'] }}</label>
+                        <input type="text" class="form-control" id="booking_id" name="booking_id" placeholder="booking number" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="lastname" class="form-label">{{ translations['lastname'] }}</label>
+                        <input type="text" class="form-control" id="lastname" name="lastname" placeholder="efternavn / lastname" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">{{ translations['login_button'] }}</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

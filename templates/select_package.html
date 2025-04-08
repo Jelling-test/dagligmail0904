@@ -1,0 +1,101 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container py-4">
+  <h1 class="text-center mb-4">{% if session.language == 'en' %}Select Power Package{% elif session.language == 'de' %}Wählen Sie ein Strompaket{% elif session.language == 'nl' %}Selecteer een stroompakket{% elif session.language == 'pl' %}Wybierz pakiet energii{% elif session.language == 'fi' %}Valitse sähköpaketti{% elif session.language == 'fr' %}Choisissez un forfait d'électricité{% else %}Vælg strømpakke{% endif %}</h1>
+
+  <div class="row">
+    <div class="col-md-8 offset-md-2">
+      <div class="alert alert-success">
+        <p>{% if session.language == 'en' %}Meter selected successfully{% elif session.language == 'de' %}Zähler erfolgreich ausgewählt{% elif session.language == 'nl' %}Meter succesvol geselecteerd{% elif session.language == 'pl' %}Licznik wybrany pomyślnie{% elif session.language == 'fi' %}Mittari valittu onnistuneesti{% elif session.language == 'fr' %}Compteur sélectionné avec succès{% else %}Måler valgt med succes{% endif %}</p>
+        {% if session.selected_meter %}
+        <p><strong>{% if session.language == 'en' %}Selected meter:{% elif session.language == 'de' %}Ausgewählter Zähler:{% elif session.language == 'nl' %}Geselecteerde meter:{% elif session.language == 'pl' %}Wybrany licznik:{% elif session.language == 'fi' %}Valittu mittari:{% elif session.language == 'fr' %}Compteur sélectionné:{% else %}Valgt måler:{% endif %}</strong> {{ session.selected_meter.display_name }}</p>
+        <p><strong>{% if session.language == 'en' %}Start value:{% elif session.language == 'de' %}Startwert:{% elif session.language == 'nl' %}Startwaarde:{% elif session.language == 'pl' %}Wartość początkowa:{% elif session.language == 'fi' %}Alkuarvo:{% elif session.language == 'fr' %}Valeur initiale:{% else %}Startværdi:{% endif %}</strong> {{ session.selected_meter.start_value }} kWh</p>
+        {% endif %}
+      </div>
+
+      <!-- Informationstekst -->
+      <div class="alert alert-info mb-4">
+        <h5><i class="fas fa-info-circle"></i> {% if session.language == 'en' %}Important information{% elif session.language == 'de' %}Wichtige Information{% elif session.language == 'nl' %}Belangrijke informatie{% elif session.language == 'pl' %}Ważna informacja{% elif session.language == 'fi' %}Tärkeää tietoa{% elif session.language == 'fr' %}Information importante{% else %}Vigtig information{% endif %}</h5>
+        
+        {% if session.language == 'en' %}
+        <p>To activate your power outlet, you need to purchase a power package.</p>
+        <p>A power package automatically expires when you check out or after the selected time.</p>
+        <p>If you need more power, you can purchase add-on packages.</p>
+        <p>An add-on package can only be used in combination with a day package.</p>
+        {% elif session.language == 'de' %}
+        <p>Um Ihre Steckdose zu aktivieren, müssen Sie ein Strompaket kaufen.</p>
+        <p>Ein Strompaket läuft automatisch ab, wenn Sie auschecken oder nach der gewählten Zeit.</p>
+        <p>Wenn Sie mehr Strom benötigen, können Sie Zusatzpakete kaufen.</p>
+        <p>Ein Zusatzpaket kann nur in Kombination mit einem Tagespaket verwendet werden.</p>
+        {% elif session.language == 'nl' %}
+        <p>Om uw stopcontact te activeren, moet u een stroompakket kopen.</p>
+        <p>Een stroompakket verloopt automatisch bij het uitchecken of na de geselecteerde tijd.</p>
+        <p>Als u meer stroom nodig heeft, kunt u aanvullende pakketten kopen.</p>
+        <p>Een aanvullend pakket kan alleen worden gebruikt in combinatie met een dagpakket.</p>
+        {% elif session.language == 'pl' %}
+        <p>Aby aktywować gniazdko elektryczne, musisz kupić pakiet energetyczny.</p>
+        <p>Pakiet energetyczny wygasa automatycznie przy wymeldowaniu lub po wybranym czasie.</p>
+        <p>Jeśli potrzebujesz więcej energii, możesz kupić dodatkowe pakiety.</p>
+        <p>Dodatkowy pakiet może być używany tylko w połączeniu z pakietem dziennym.</p>
+        {% elif session.language == 'fi' %}
+        <p>Aktivoidaksesi pistorasiasi, sinun täytyy ostaa sähköpaketti.</p>
+        <p>Sähköpaketti vanhenee automaattisesti, kun kirjaudut ulos tai valitun ajan jälkeen.</p>
+        <p>Jos tarvitset lisää sähköä, voit ostaa lisäpaketteja.</p>
+        <p>Lisäpakettia voi käyttää vain yhdessä päiväpaketin kanssa.</p>
+        {% elif session.language == 'fr' %}
+        <p>Pour activer votre prise électrique, vous devez acheter un forfait d'électricité.</p>
+        <p>Un forfait d'électricité expire automatiquement lors de votre départ ou après la durée sélectionnée.</p>
+        <p>Si vous avez besoin de plus d'électricité, vous pouvez acheter des forfaits supplémentaires.</p>
+        <p>Un forfait supplémentaire ne peut être utilisé qu'en combinaison avec un forfait journalier.</p>
+        {% else %}
+        <p>For at dit strømudtag skal være aktivt skal du købe en strømpakke.</p>
+        <p>En strømpakke udløber automatisk ved udtjekning eller efter den valgte tid.</p>
+        <p>Har du behov for mere strøm kan du købe tillægspakker.</p>
+        <p>En tillægspakke kan kun bruges i kombination med en dagspakke.</p>
+        {% endif %}
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header">
+          <h5>{% if session.language == 'en' %}Select package size{% elif session.language == 'de' %}Wählen Sie die Paketgröße{% elif session.language == 'nl' %}Selecteer pakketgrootte{% elif session.language == 'pl' %}Wybierz rozmiar pakietu{% elif session.language == 'fi' %}Valitse paketin koko{% elif session.language == 'fr' %}Choisissez la taille du forfait{% else %}Vælg pakkestørrelse{% endif %}</h5>
+        </div>
+        <div class="card-body">
+          <form method="post" action="{{ url_for('select_package') }}">
+            <div class="form-group mb-3">
+              <label for="package_id">{% if session.language == 'en' %}Available packages{% elif session.language == 'de' %}Verfügbare Pakete{% elif session.language == 'nl' %}Beschikbare pakketten{% elif session.language == 'pl' %}Dostępne pakiety{% elif session.language == 'fi' %}Saatavilla olevat paketit{% elif session.language == 'fr' %}Forfaits disponibles{% else %}Tilgængelige pakker{% endif %}</label>
+              {% if packages %}
+                {% for package in packages %}
+                <div class="card mb-3">
+                  <div class="card-body">
+                    <div class="form-check">
+                      <input class="form-check-input" type="radio" name="package_id" id="package_{{ package.id }}" value="{{ package.id }}" {% if loop.first %}checked{% endif %}>
+                      <label class="form-check-label" for="package_{{ package.id }}">
+                        <h5>{{ package.navn }}</h5>
+                        <p>
+                          <strong>{% if session.language == 'en' %}Price:{% elif session.language == 'de' %}Preis:{% elif session.language == 'nl' %}Prijs:{% elif session.language == 'pl' %}Cena:{% elif session.language == 'fi' %}Hinta:{% elif session.language == 'fr' %}Prix:{% else %}Pris:{% endif %}</strong> {{ package.pris }} kr<br>
+                          <strong>{% if session.language == 'en' %}Units:{% elif session.language == 'de' %}Einheiten:{% elif session.language == 'nl' %}Eenheden:{% elif session.language == 'pl' %}Jednostki:{% elif session.language == 'fi' %}Yksiköt:{% elif session.language == 'fr' %}Unités:{% else %}Enheder:{% endif %}</strong> {{ package.enheder }} kWh
+                          {% if package.dage %}
+                          <br><strong>{% if session.language == 'en' %}Hours:{% elif session.language == 'de' %}Stunden:{% elif session.language == 'nl' %}Uren:{% elif session.language == 'pl' %}Godziny:{% elif session.language == 'fi' %}Tunnit:{% elif session.language == 'fr' %}Heures:{% else %}Timer:{% endif %}</strong> {{ package.dage * 24 }}
+                          {% endif %}
+                        </p>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                {% endfor %}
+              {% else %}
+                <div class="alert alert-warning">
+                  <p>{% if session.language == 'en' %}No packages are available for your user type. Please contact reception.{% elif session.language == 'de' %}Für Ihren Benutzertyp sind keine Pakete verfügbar. Bitte wenden Sie sich an die Rezeption.{% elif session.language == 'nl' %}Er zijn geen pakketten beschikbaar voor uw gebruikerstype. Neem contact op met de receptie.{% elif session.language == 'pl' %}Brak dostępnych pakietów dla Twojego typu użytkownika. Skontaktuj się z recepcją.{% elif session.language == 'fi' %}Käyttäjätyypillesi ei ole saatavilla paketteja. Ota yhteyttä vastaanottoon.{% elif session.language == 'fr' %}Aucun forfait n'est disponible pour votre type d'utilisateur. Veuillez contacter la réception.{% else %}Ingen pakker er tilgængelige for din brugertype. Kontakt venligst receptionen.{% endif %}</p>
+                </div>
+              {% endif %}
+            </div>
+            {% if packages %}
+              <button type="submit" class="btn btn-primary btn-lg w-100 mt-4">{% if session.language == 'en' %}Buy package and go to power dashboard{% elif session.language == 'de' %}Paket kaufen und zum Strom-Dashboard gehen{% elif session.language == 'nl' %}Koop pakket en ga naar stroompaneel{% elif session.language == 'pl' %}Kup pakiet i przejdź do panelu energii{% elif session.language == 'fi' %}Osta paketti ja siirry sähkökojelautaan{% elif session.language == 'fr' %}Acheter le forfait et aller au tableau de bord d'électricité{% else %}Køb pakke og gå til strømdashboard{% endif %}</button>
+            {% endif %}
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
