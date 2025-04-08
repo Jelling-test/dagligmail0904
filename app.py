@@ -9,6 +9,8 @@ import traceback
 import mysql.connector
 from mysql.connector import Error, pooling
 from mysql.connector.cursor import MySQLCursorDict
+import stripe
+from flask_mail import Mail, Message
 
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
@@ -17,10 +19,35 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 
+# Indlæs miljøvariabler fra .env filen
 load_dotenv()
+print("INFO: Miljøvariabler fra .env fil er indlæst")
 
+# --- System Indstillinger og Konstanter ---
+ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'password')
+HASS_URL = os.getenv('HASS_URL')
+HASS_TOKEN = os.getenv('HASS_TOKEN')
+
+# Miljøvariable og konfiguration
 app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'default_secret_key')
+app.secret_key = os.getenv('SECRET_KEY', 'en_hemmelig_nøgle_til_udvikling')
+app.config['SESSION_TYPE'] = 'filesystem'
+
+# Opsætning af Flask-Mail
+app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.example.com')
+app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME', '')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD', '')
+app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True').lower() in ('true', '1', 't')
+app.config['MAIL_USE_SSL'] = os.getenv('MAIL_USE_SSL', 'False').lower() in ('true', '1', 't')
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv('RECEIPT_SENDER_EMAIL', 'no-reply@example.com')
+mail = Mail(app)
+
+# Login manager opsætning
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
 
 # --- Cache Konfiguration ---
 cache_config = { "CACHE_TYPE": os.getenv('CACHE_TYPE', 'SimpleCache'), "CACHE_DEFAULT_TIMEOUT": int(os.getenv('CACHE_DEFAULT_TIMEOUT', 300)) }
@@ -32,29 +59,149 @@ db_pool = None
 def init_db_pool():
     global db_pool
     try:
-        pool_config = { "host": os.getenv('DB_HOST'), "user": os.getenv('DB_USER'), "password": os.getenv('DB_PASSWORD'), "database": os.getenv('DB_NAME'), "pool_name": os.getenv('DB_POOL_NAME', "flask_pool"), "pool_size": int(os.getenv('DB_POOL_SIZE', 30)), "pool_reset_session": True, }
+        # Først prøv at rydde op i eventuelle ufrigivne forbindelser ved at genstarte pool
+        if db_pool is not None:
+            print("Lukker eksisterende DB pool for at frigive forbindelser...")
+            db_pool = None
+            
+        pool_config = { 
+            "host": os.getenv('DB_HOST'), 
+            "user": os.getenv('DB_USER'), 
+            "password": os.getenv('DB_PASSWORD'), 
+            "database": os.getenv('DB_NAME'), 
+            "pool_name": os.getenv('DB_POOL_NAME', "flask_pool"), 
+            "pool_size": int(os.getenv('DB_POOL_SIZE', 30)),
+            "pool_reset_session": True, 
+        }
         pool_config = {k: v for k, v in pool_config.items() if v is not None}
         print(f"Initialiserer DB pool '{pool_config.get('pool_name')}' str {pool_config.get('pool_size')}...")
         db_pool = pooling.MySQLConnectionPool(**pool_config)
-        test_conn = db_pool.get_connection(); print(f"Pool Test OK (ID: {test_conn.connection_id}). Frigiver..."); test_conn.close(); print("DB pool OK.")
-    except Error as e: print(f"FATAL: DB Pool Init Fejl: {e}"); db_pool = None
-    except Exception as e: print(f"FATAL: Uventet DB Pool Init Fejl: {ex}"); db_pool = None
+        test_conn = db_pool.get_connection()
+        print(f"Pool Test OK (ID: {test_conn.connection_id}). Frigiver...")
+        test_conn.close()
+        print("DB pool OK.")
+    except Error as e: 
+        print(f"FATAL: DB Pool Init Fejl: {e}")
+        db_pool = None
+    except Exception as e: 
+        print(f"FATAL: Uventet DB Pool Init Fejl: {e}")
+        db_pool = None
+
 def get_db_connection():
     global db_pool;
     if db_pool is None: print("ERROR: DB pool ej init."); return None
     try: conn = db_pool.get_connection(); return conn
     except Error as e: print(f"Fejl hent DB conn: {e}"); return None
+
 def safe_close_connection(conn):
-    if conn and conn.is_connected():
-        try: conn.close()
-        except Error as e: print(f"Fejl frigiv DB conn: {e}")
+    if conn:
+        try: 
+            if conn.is_connected():
+                conn.close()
+                return True
+            else:
+                print("Advarsel: Forsøg på at lukke allerede lukket forbindelse")
+        except Error as e: 
+            print(f"Fejl ved lukning af DB forbindelse: {e}")
+        except Exception as e:
+            print(f"Uventet fejl ved lukning af DB forbindelse: {e}")
+    return False
+
 init_db_pool()
 
-ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'password')
-login_manager = LoginManager(); login_manager.init_app(app); login_manager.login_view = 'login'
-HASS_URL = os.getenv('HASS_URL')
-HASS_TOKEN = os.getenv('HASS_TOKEN')
+# --- System Indstillinger Funktioner ---
+def get_system_settings():
+    settings = cache.get('system_settings_all');
+    if settings is not None: return settings
+    print("DEBUG: Henter sys settings fra DB (cache miss).")
+    settings = {}; conn = None; cursor = None
+    try:
+        conn = get_db_connection()
+        if conn: cursor = conn.cursor(dictionary=True); cursor.execute("SELECT setting_key, value FROM system_settings"); settings = {r['setting_key']: r['value'] for r in cursor.fetchall()}; cache.set('system_settings_all', settings, timeout=600); print(f"DEBUG: Cachede {len(settings)} sys settings.")
+        else: print("ERROR get_system_settings: No DB conn.")
+    except Error as db_e: print(f"FEJL hent sys settings DB: {db_e}")
+    except Exception as e: print(f"FEJL get_sys settings Gen: {e}")
+    finally:
+        if cursor: cursor.close()
+        if conn: safe_close_connection(conn)
+    return settings
+
+def update_system_setting(key, value):
+    conn = None; cursor = None; success = False
+    try:
+        conn = get_db_connection()
+        if conn:
+             cursor = conn.cursor()
+             cursor.execute("REPLACE INTO system_settings (setting_key, value) VALUES (%s, %s)", (key, value))
+             conn.commit(); success = True
+             cache.delete('system_settings_all')
+             if key == 'timestamp_format': cache.delete('timestamp_format')
+             if key == 'unit_text': cache.delete('system_settings_display')
+             print(f"DEBUG update_system_setting: Opdaterede {key}")
+        else:
+             print(f"FEJL: DB fejl ved opdatering af {key}.")
+    except Error as db_e:
+        print(f"FEJL DB opdatering {key}: {db_e}")
+        if conn: conn.rollback()
+    except Exception as e:
+        print(f"FEJL opdatering {key}: {str(e)}")
+        if conn: conn.rollback()
+    finally:
+        if cursor: cursor.close()
+        if conn: safe_close_connection(conn)
+    return success
+
+# --- Stripe Konfiguration ---
+def get_stripe_keys():
+    # Direkte debug af miljøvariabler
+    print(f"DEBUG: STRIPE_PUBLISHABLE_KEY_TEST miljøvariabel: '{os.getenv('STRIPE_PUBLISHABLE_KEY_TEST', 'IKKE SAT')}'")
+    print(f"DEBUG: STRIPE_SECRET_KEY_TEST miljøvariabel: '{os.getenv('STRIPE_SECRET_KEY_TEST', 'IKKE SAT')}'")
+    
+    # Midlertidigt hardkodet til test - KUN TIL DEMO/TEST
+    # I en produktionsmiljø ville disse værdier komme fra miljøvariabler
+    test_publishable = "pk_test_rrtorVz0wXEqxZ2xLQq81VMS0095DFsWBk" 
+    test_secret = "sk_test_WvIACW8kIb7ihbWFeCmbJ4wq00l81tBJxx"
+    test_webhook = ""
+    
+    live_publishable = ""
+    live_secret = ""
+    live_webhook = ""
+    
+    # Prøv at hente mode fra databasen, hvis det ikke virker, brug 'test' som standard
+    try:
+        settings = get_system_settings()
+        stripe_mode = settings.get('stripe_mode', 'test').strip().lower()
+    except Exception:
+        # Hvis der er problemer med databasen, brug 'test' mode
+        stripe_mode = 'test'
+    
+    if stripe_mode == 'live':
+        publishable_key = live_publishable
+        secret_key = live_secret
+        webhook_secret = live_webhook
+    else:  # Standard er test-mode
+        publishable_key = test_publishable
+        secret_key = test_secret
+        webhook_secret = test_webhook
+    
+    print(f"INFO: Bruger Stripe nøgler til test. Mode: {stripe_mode}")
+    print(f"DEBUG: Publishable Key: '{publishable_key}'")
+    print(f"DEBUG: Secret Key findes: {'JA' if secret_key else 'NEJ'}")
+    
+    return {
+        'publishable_key': publishable_key,
+        'secret_key': secret_key,
+        'webhook_secret': webhook_secret,
+        'mode': stripe_mode
+    }
+
+# Funktionen returnerer nu et dictionary, så vi skal kalde den på en anden måde
+stripe_keys = get_stripe_keys()
+if stripe_keys.get('secret_key'):
+    stripe.api_key = stripe_keys.get('secret_key')
+    print(f"Stripe initialiseret i {stripe_keys.get('mode')} mode")
+else:
+    print("ADVARSEL: Stripe Secret Key mangler!")
 
 # --- GLOBALT DEFINERET HJÆLPEFUNKTION ---
 def format_number(num):
@@ -157,46 +304,105 @@ def get_configured_meters():
         if conn: safe_close_connection(conn)
     return meters
 
-# --- System Indstillinger Funktioner ---
-def get_system_settings():
-    settings = cache.get('system_settings_all');
-    if settings is not None: return settings
-    print("DEBUG: Henter sys settings fra DB (cache miss).")
-    settings = {}; conn = None; cursor = None
-    try:
-        conn = get_db_connection()
-        if conn: cursor = conn.cursor(dictionary=True); cursor.execute("SELECT setting_key, value FROM system_settings"); settings = {r['setting_key']: r['value'] for r in cursor.fetchall()}; cache.set('system_settings_all', settings, timeout=600); print(f"DEBUG: Cachede {len(settings)} sys settings.")
-        else: print("ERROR get_system_settings: No DB conn.")
-    except Error as db_e: print(f"FEJL hent sys settings DB: {db_e}")
-    finally:
-        if cursor: cursor.close()
-        if conn: safe_close_connection(conn)
-    return settings
+# --- E-mail og Stripe Hjælpefunktioner ---
+def send_purchase_receipt(user_email, user_name, package_name, package_units, price_dkk, purchase_time, meter_display_name):
+    settings = get_system_settings()
+    sender = settings.get('receipt_sender_email', app.config['MAIL_DEFAULT_SENDER'])
+    if not user_email:
+        print(f"ADVARSEL: Kan ikke sende kvittering for {package_name} til bruger {user_name}, mangler email.")
+        return
 
-def update_system_setting(key, value):
-    conn = None; cursor = None; success = False
+    subject = f"Kvittering for køb af strømpakke: {package_name}"
+    body = f"""
+    Hej {user_name},
+
+    Tak for dit køb!
+
+    Pakke: {package_name}
+    Enheder: {package_units}
+    Måler: {meter_display_name}
+    Pris: {price_dkk:.2f} DKK
+    Købstidspunkt: {purchase_time.strftime('%Y-%m-%d %H:%M:%S')}
+
+    Du kan nu se dit forbrug på dashboardet.
+
+    Med venlig hilsen,
+    Campingpladsen
+    """
+    
+    msg = Message(subject=subject, recipients=[user_email], body=body, sender=sender)
+    try:
+        mail.send(msg)
+        print(f"INFO: Kvittering sendt til {user_email} for pakke {package_name}")
+    except Exception as e:
+        print(f"FEJL: Kunne ikke sende kvittering til {user_email}: {e}")
+        # Log fejlen, men lad resten af processen fortsætte
+
+def send_daily_sales_report():
+    print(f"BG JOB: Daglig salgsrapport start - {datetime.now()}")
+    conn = None
+    cursor = None
+    settings = get_system_settings()
+    admin_email = settings.get('admin_report_email')
+    sender = settings.get('receipt_sender_email', app.config['MAIL_DEFAULT_SENDER'])
+
+    if not admin_email:
+        print("ADVARSEL: Daglig salgsrapport - Admin email ikke konfigureret.")
+        return
+
     try:
         conn = get_db_connection()
-        if conn:
-             cursor = conn.cursor()
-             cursor.execute("REPLACE INTO system_settings (setting_key, value) VALUES (%s, %s)", (key, value))
-             conn.commit(); success = True
-             cache.delete('system_settings_all')
-             if key == 'timestamp_format': cache.delete('timestamp_format')
-             if key == 'unit_text': cache.delete('system_settings_display')
-             print(f"DEBUG update_system_setting: Opdaterede {key}")
-        else:
-             print(f"FEJL: DB fejl ved opdatering af {key}.")
-    except Error as db_e:
-        print(f"FEJL DB opdatering {key}: {db_e}")
-        if conn: conn.rollback()
+        if not conn:
+            print("FEJL: Daglig salgsrapport - DB forbindelse fejlede.")
+            return
+
+        cursor = conn.cursor(dictionary=True)
+        twenty_four_hours_ago = datetime.now() - timedelta(hours=24)
+        
+        query = """
+            SELECT sk.booking_id, sp.navn as package_name, sp.pris, sk.koebs_tidspunkt
+            FROM stroem_koeb sk
+            JOIN stroem_pakker sp ON sk.pakke_id = sp.id
+            WHERE sk.koebs_tidspunkt >= %s
+            ORDER BY sk.koebs_tidspunkt DESC
+        """
+        
+        cursor.execute(query, (twenty_four_hours_ago,))
+        sales = cursor.fetchall()
+
+        if not sales:
+            print("INFO: Daglig salgsrapport - Ingen salg i perioden.")
+            return
+
+        total_revenue = sum(float(s['pris']) for s in sales if s.get('pris') is not None)
+
+        if total_revenue <= 0:
+             print("INFO: Daglig salgsrapport - Ingen omsætning i perioden.")
+             return
+
+        # Formater rapport
+        subject = f"Daglig Omsætningsrapport - {datetime.now().strftime('%Y-%m-%d')}"
+        body = f"Omsætningsrapport for {datetime.now().strftime('%Y-%m-%d')}:\n\n"
+        body += f"Total Omsætning: {total_revenue:.2f} DKK\n"
+        body += f"Antal Salg: {len(sales)}\n\nDetaljer:\n"
+        for sale in sales:
+             tid = sale.get('koebs_tidspunkt','Ukendt tid')
+             if isinstance(tid, datetime):
+                 tid = tid.strftime('%H:%M:%S')
+             body += f"- Kl {tid}: {sale.get('booking_id','Ukendt')} købte '{sale.get('package_name','Ukendt pakke')}' ({sale.get('pris', 0.00):.2f} DKK)\n"
+
+        msg = Message(subject=subject, recipients=[admin_email], body=body, sender=sender)
+        mail.send(msg)
+        print(f"INFO: Daglig salgsrapport - Rapport sendt til {admin_email}. Omsætning: {total_revenue:.2f} DKK")
+
+    except Error as dbe:
+        print(f"FATAL: Daglig salgsrapport DB fejl: {dbe}")
     except Exception as e:
-        print(f"FEJL opdatering {key}: {str(e)}")
-        if conn: conn.rollback()
+        print(f"FATAL: Daglig salgsrapport generel fejl: {e}")
+        traceback.print_exc()
     finally:
         if cursor: cursor.close()
         if conn: safe_close_connection(conn)
-    return success
 
 # Sprog oversættelser
 translations = {
@@ -241,7 +447,10 @@ def load_user(user_id):
 @admin_required
 def system_admin_settings():
     if request.method=='POST':
-        updated=True; hurl=request.form.get('hass_url','').strip(); htok=request.form.get('hass_token','').strip()
+        updated=True
+        
+        # Håndter Home Assistant indstillinger
+        hurl=request.form.get('hass_url','').strip(); htok=request.form.get('hass_token','').strip()
         if hurl and not update_system_setting('hass_url',hurl): updated=False
         if htok and not update_system_setting('hass_token',htok): updated=False
         unit_text=request.form.get('unit_text','kWh').strip(); tformat=request.form.get('timestamp_format','%Y-%m-%d %H:%M:%S').strip()
@@ -249,14 +458,71 @@ def system_admin_settings():
         except ValueError: flash(f"Ugyldigt format: '{tformat}'. Bruger std.",'warning'); tformat='%Y-%m-%d %H:%M:%S'
         if not update_system_setting('unit_text',unit_text): updated=False
         if not update_system_setting('timestamp_format',tformat): updated=False
-        global HASS_URL,HASS_TOKEN;
+        
+        # Håndter Stripe indstillinger (kun mode - nøgler hentes fra .env)
+        stripe_mode = request.form.get('stripe_mode', 'test').strip()
+        if not update_system_setting('stripe_mode', stripe_mode): updated=False
+        
+        # Håndter e-mail indstillinger
+        admin_report_email = request.form.get('admin_report_email', '').strip()
+        receipt_sender_email = request.form.get('receipt_sender_email', '').strip()
+        smtp_host = request.form.get('smtp_host', '').strip()
+        smtp_port = request.form.get('smtp_port', '587').strip()
+        smtp_user = request.form.get('smtp_user', '').strip()
+        smtp_password = request.form.get('smtp_password', '').strip()
+        smtp_use_tls = request.form.get('smtp_use_tls', 'true').strip().lower() == 'true'
+        smtp_use_ssl = request.form.get('smtp_use_ssl', 'false').strip().lower() == 'true'
+        
+        # Opdater e-mail indstillinger
+        if admin_report_email and not update_system_setting('admin_report_email', admin_report_email): updated=False
+        if receipt_sender_email and not update_system_setting('receipt_sender_email', receipt_sender_email): updated=False
+        if smtp_host and not update_system_setting('smtp_host', smtp_host): updated=False
+        if smtp_port and not update_system_setting('smtp_port', smtp_port): updated=False
+        if smtp_user and not update_system_setting('smtp_user', smtp_user): updated=False
+        if smtp_password and not update_system_setting('smtp_password', smtp_password): updated=False
+        if not update_system_setting('smtp_use_tls', str(smtp_use_tls).lower()): updated=False
+        if not update_system_setting('smtp_use_ssl', str(smtp_use_ssl).lower()): updated=False
+        
+        global HASS_URL, HASS_TOKEN
+        # Opdater globale variabler
         if hurl: HASS_URL=hurl; os.environ['HASS_URL']=hurl
         if htok: HASS_TOKEN=htok; os.environ['HASS_TOKEN']=htok
+        
+        # Opdater Stripe API nøgle hvis ændret
+        if (stripe_mode == 'test' and stripe_keys.get('secret_key')) or (stripe_mode == 'live' and stripe_keys.get('secret_key')):
+            stripe_keys = get_stripe_keys()
+            if stripe_keys.get('secret_key'):
+                stripe.api_key = stripe_keys.get('secret_key')
+                print(f"Stripe API nøgle opdateret til {stripe_keys.get('mode')} mode")
+        
+        # Opdater Mail settings hvis ændret
+        if smtp_host:
+            app.config['MAIL_SERVER'] = smtp_host
+            app.config['MAIL_PORT'] = int(smtp_port)
+            app.config['MAIL_USERNAME'] = smtp_user
+            app.config['MAIL_PASSWORD'] = smtp_password
+            app.config['MAIL_USE_TLS'] = smtp_use_tls
+            app.config['MAIL_USE_SSL'] = smtp_use_ssl
+            app.config['MAIL_DEFAULT_SENDER'] = receipt_sender_email
+            # Geninitialiserer mail med de nye indstillinger
+            mail = Mail(app)
+            print("Mail indstillinger opdateret")
+        
         if updated: flash('Indstillinger opdateret.','success')
         else: flash('Fejl ved opdatering.','danger')
         return redirect(url_for('system_admin_settings'))
+
     # GET
-    cfg=get_system_settings(); display={'hass_url':cfg.get('hass_url',os.getenv('HASS_URL','')), 'hass_token':cfg.get('hass_token',os.getenv('HASS_TOKEN','')), 'admin_username':os.getenv('ADMIN_USERNAME','admin'), 'unit_text':cfg.get('unit_text','kWh'), 'timestamp_format':cfg.get('timestamp_format','%Y-%m-%d %H:%M:%S')}
+    cfg=get_system_settings()
+    display={
+        'hass_url': cfg.get('hass_url',os.getenv('HASS_URL','')), 
+        'hass_token': cfg.get('hass_token',os.getenv('HASS_TOKEN','')), 
+        'admin_username': os.getenv('ADMIN_USERNAME','admin'),
+        'unit_text': cfg.get('unit_text','kWh'),
+        'timestamp_format': cfg.get('timestamp_format','%Y-%m-%d %H:%M:%S'),
+        # Stripe indstillinger
+        'stripe_mode': cfg.get('stripe_mode', os.getenv('STRIPE_MODE', 'test')),
+    }
     return render_template('admin_system_settings.html', settings=display)
 
 @app.route('/systemkontrolcenter23/test-hass-connection', methods=['POST'])
@@ -346,7 +612,7 @@ def admin_get_available_configured_meters(): # Behold funktionsnavn
         cfg=get_configured_meters();
         if not cfg: return jsonify({'success': True, 'meters': []})
         active=set(); conn=get_db_connection()
-        if conn: cursor=conn.cursor(dictionary=True); cursor.execute('SELECT DISTINCT meter_id FROM active_meters WHERE meter_id IS NOT NULL'); active={r['meter_id'] for r in cursor.fetchall()}
+        if conn: cursor=conn.cursor(dictionary=True); cursor.execute("SELECT DISTINCT meter_id FROM active_meters WHERE meter_id IS NOT NULL"); active={r['meter_id'] for r in cursor.fetchall()}
         meters=[{'id':m['sensor_id'],'name':m.get('display_name') or f"M:{m['sensor_id']}",'location':m.get('location','')} for m in cfg if m['sensor_id'] not in active]
         return jsonify({'success':True, 'meters':meters})
     except Error as db_e: print(f"ERR admin get avail DB: {db_e}"); return jsonify({'success':False,'message':f'DB:{db_e}'}), 500
@@ -418,7 +684,7 @@ def admin_connect_meter_sys():
         log_note = f"Admin tilknyttede måler: {current_user.username}"
         cursor.execute(
             "INSERT INTO stroem_koeb (booking_id, pakke_id, maaler_id, enheder_tilbage) VALUES (%s, %s, %s, %s)",
-            (booking_id, 1, meter_config_id, package_size)
+            (booking_id, 1, meter_id, package_size)
         )
         
         # Aktivér målerens kontakt, hvis den har en
@@ -479,7 +745,9 @@ def admin_add_units():
         upd_cursor=conn.cursor(); upd_cursor.execute("UPDATE active_meters SET package_size=package_size+%s WHERE id=%s",(units,connection['id'])); rows=upd_cursor.rowcount; upd_cursor.close()
         if rows>0:
             try: # Log
-                 log_cursor=conn.cursor(); log_cursor.execute("""INSERT INTO package_logs (booking_id, meter_id, package_name, units_added, admin_action, notes, action_timestamp) VALUES (%s,%s,%s,%s,%s,%s,NOW())""",(bid,mid_input,'Manuel Admin Tilføjelse',units,1,f"Admin add {current_user.username}")); log_cursor.close()
+                 log_cursor=conn.cursor()
+                 # FJERN switch_id fra INSERT
+                 log_cursor.execute("""INSERT INTO package_logs (booking_id, meter_id, package_name, units_added, admin_action, notes, action_timestamp) VALUES (%s,%s,'Manuel Admin Tilføjelse',%s,1,%s,NOW())""",(bid,mid_input,'Admin add {current_user.username}')); log_cursor.close()
             except Error as loge: print(f"WARN log add: {loge}")
             except Exception as logge: print(f"WARN log add Gen: {logge}")
             conn.commit(); flash(f'Tilføjet {units} til {mid_input} ({bid}).','success')
@@ -814,7 +1082,7 @@ def select_meter():
                                 curr_val = float(rj["state"])
                                 print(f"DEBUG SELECT_METER SUCCESS: Variant {meter_variant} gav værdi {curr_val}")
                                 curr = curr_val
-                            except (ValueError, TypeError) as e:
+                            except (ValueError, TypeError):
                                 print(f"DEBUG SELECT_METER ERROR: Kunne ikke konvertere værdi for {meter_variant}: {e}")
                         else:
                             print(f"DEBUG SELECT_METER ERROR: Ugyldig state for {meter_variant}: {rj.get('state')}")
@@ -878,7 +1146,7 @@ def select_meter():
                 meters_disp=meters
                 if not meters and cfg_meters: flash("Alle tilgængelige målere er offline eller i brug.","info")
         except Error as dbeg: print(f"ERR select_meter GET DB: {dbeg}"); flash(trans['error_db_connection'],'error')
-        except Exception as eg: print(f"ERR select_meter GET Gen: {eg}"); flash(f"{trans['error_general']}: {str(eg)}",'error')
+        except Exception as eg: print(f"ERR select_meter GET Gen: {e}"); flash(f"{trans['error_general']}: {str(eg)}",'error')
         finally:
             if cursor: cursor.close()
             if conn: safe_close_connection(conn)
@@ -1059,7 +1327,7 @@ def check_package_status():
     print(f"BG JOB: check_pkg Start - {datetime.now()}"); conn=None; cursor=None
     if not HASS_URL or not HASS_TOKEN: print("ERR check_pkg: No HASS cfg."); return
     try:
-        conn=get_db_connection();
+        conn=get_db_connection()
         if not conn: print("ERR check_pkg: DB fail."); return
         cursor=conn.cursor(dictionary=True); cursor.execute("""SELECT am.*,u.id as uid,mc.power_switch_id FROM active_meters am JOIN users u ON am.booking_id=u.username LEFT JOIN meter_config mc ON am.meter_id=mc.sensor_id WHERE am.meter_id IS NOT NULL AND am.package_size>0""")
         meters=cursor.fetchall();
@@ -1086,8 +1354,8 @@ def check_package_status():
                                          lcur = conn.cursor()
                                          # FJERN switch_id fra INSERT
                                          lcur.execute("""INSERT INTO power_events (user_id,event_type,meter_id,details,event_timestamp) VALUES (%s,'auto_power_off_empty',%s,%s,NOW())""", (uid,mid,f"Pakke tom. Brug:{usage:.3f}, Pkg:{pkg:.3f}")); lcur.close()
-                                     except Error as loge: print(f"WARN check_pkg log DB: {loge}"); conn.rollback()
-                                     except Exception as logge: print(f"WARN check_pkg log Gen: {logge}"); conn.rollback()
+                                     except Error as loge: print(f"WARN check_pkg log DB: {loge}")
+                                     except Exception as logge: print(f"WARN check_pkg log Gen: {logge}")
                                 else: print(f"ERR check_pkg: Off fail {psid} ({pr.status_code})")
                            # elif sr.status_code!=200: print(f"WARN check_pkg: Get state fail {psid} ({sr.status_code})")
                       except Exception as swe: print(f"ERR check_pkg switch {psid}: {swe}")
@@ -1103,7 +1371,7 @@ def check_and_remove_inactive_users():
     print(f"BG JOB: inactive Start - {datetime.now()}"); conn=None; cursor=None
     if not HASS_URL or not HASS_TOKEN: print("ERR inactive: No HASS cfg."); return
     try:
-        conn=get_db_connection();
+        conn=get_db_connection()
         if not conn: print("ERR inactive: DB fail."); return
         cursor=conn.cursor(dictionary=True); cursor.execute("""SELECT u.id as uid,u.username as bid,am.id as amid,am.meter_id,mc.power_switch_id FROM users u JOIN active_meters am ON u.username=am.booking_id LEFT JOIN aktive_bookinger ab ON u.username=ab.booking_id LEFT JOIN meter_config mc ON am.meter_id=mc.sensor_id WHERE ab.booking_id IS NULL AND u.username!=%s""",(ADMIN_USERNAME,))
         users=cursor.fetchall();
@@ -1113,17 +1381,22 @@ def check_and_remove_inactive_users():
              try: # Turn off... Log... Delete... Commit...
                  psid=u.get('power_switch_id');
                  if not psid and mid and mid.startswith('sensor.'): base=mid.split('.')[1].split('_')[0]; psid=f"switch.{base}_0"
-                 if psid:
-                    try: requests.post(f"{HASS_URL}/api/services/switch/turn_off", headers={"Authorization":f"Bearer {HASS_TOKEN}"}, json={"entity_id":psid}, timeout=10)
-                    except Exception as swe: print(f"WARN inactive switch {psid}: {swe}")
-                 try: # Log (med korrekte parametre)
-                     log_cursor=conn.cursor()
-                     # FJERN switch_id fra INSERT
-                     log_cursor.execute("""INSERT INTO power_events (user_id,event_type,meter_id,details,event_timestamp) VALUES (%s,'auto_release_inactive',%s,%s,NOW())""", (uid,mid,f"Bruger {bid} ej aktiv. Måler frigivet.")); log_cursor.close()
-                 except Error as loge: print(f"WARN inactive log: {loge}")
-                 cd=conn.cursor(); cd.execute("DELETE FROM active_meters WHERE id=%s",(u['amid'],)); deleted=cd.rowcount; cd.close()
-                 if deleted>0: conn.commit(); print(f"SUCCESS inactive: Removed {mid} for {bid}")
-                 else: conn.rollback(); print(f"WARN inactive: Delete fail {u['amid']}")
+                 if not psid: print(f"WARN check_pkg: No switch ID {mid}"); continue
+                 try: # Check state
+                    sr=requests.get(f"{HASS_URL}/api/states/{psid}",headers={"Authorization":f"Bearer {HASS_TOKEN}"},timeout=5)
+                    if sr.status_code==200 and sr.json().get('state')=='on':
+                         pr=requests.post(f"{HASS_URL}/api/services/switch/turn_off",headers={"Authorization":f"Bearer {HASS_TOKEN}"},json={"entity_id":psid},timeout=10)
+                         if pr.status_code==200:
+                              print(f"SUCCESS check_pkg: Off {psid}");
+                              try: # Log
+                                   log_cursor=conn.cursor()
+                                   # FJERN switch_id fra INSERT
+                                   log_cursor.execute("""INSERT INTO power_events (user_id,event_type,meter_id,details,event_timestamp) VALUES (%s,'auto_release_inactive',%s,%s,NOW())""", (uid,mid,f"Bruger {bid} ej aktiv. Måler frigivet.")); log_cursor.close()
+                              except Error as loge: print(f"WARN check_pkg log DB: {loge}")
+                              except Exception as logge: print(f"WARN check_pkg log Gen: {logge}")
+                         else: print(f"ERR check_pkg: Off fail {psid} ({pr.status_code})")
+                    # elif sr.status_code!=200: print(f"WARN check_pkg: Get state fail {psid} ({sr.status_code})")
+                 except Exception as swe: print(f"ERR check_pkg switch {psid}: {swe}")
              except Exception as ue: print(f"ERROR inactive user {bid}: {ue}"); conn.rollback()
     except Error as dbe: print(f"FATAL inactive DB: {dbe}")
     except Exception as e: print(f"FATAL inactive Gen: {e}"); traceback.print_exc()
@@ -1152,48 +1425,11 @@ def select_package():
     print(f"DEBUG SELECT_PACKAGE SESSION DATA: {sel}")
     
     # Robust tjek om alle nødvendige nøgler findes i session
-    if not sel or 'sensor_id' not in sel or 'start_value' not in sel or 'meter_config_id' not in sel:
+    if not sel or 'sensor_id' not in sel or 'start_value' not in sel:
         print(f"DEBUG SELECT_PACKAGE ERROR: Manglende eller ukomplet måler i session. Session indhold: {sel}")
         flash('Der mangler vigtig information om måleren. Vælg venligst måleren igen.', 'error')
         session.pop('selected_meter', None)  # Ryd session hvis data er ukomplet
         return redirect(url_for('select_meter'))
-    
-    # Hvis der ikke er en valgt måler i sessionen, men brugeren har en aktiv måler i databasen,
-    # så hentes måler informationen fra databasen og gemmes i sessionen
-    if not sel:
-        try:
-            conn=get_db_connection()
-            if conn:
-                cursor=conn.cursor(dictionary=True)
-                cursor.execute('SELECT meter_id, start_value, package_size FROM active_meters WHERE booking_id=%s',(current_user.username,))
-                active_meter=cursor.fetchone()
-                if active_meter:
-                    # Hent målerens displaynavn
-                    cursor.execute('SELECT display_name FROM meter_config WHERE sensor_id=%s',(active_meter['meter_id'],))
-                    display_info = cursor.fetchone()
-                    display_name = display_info['display_name'] if display_info else active_meter['meter_id']
-                    
-                    # Gem måler informationen i sessionen
-                    sel = {
-                        'meter_config_id': active_meter['meter_config_id'],
-                        'sensor_id': active_meter['meter_id'],
-                        'start_value': active_meter['start_value'],
-                        'display_name': display_name
-                    }
-                    session['selected_meter'] = sel
-                    print(f"DEBUG: Fundet aktiv måler for {current_user.username} og gemt i session: {sel}")
-                else:
-                    flash('Ingen aktiv måler fundet.','warning')
-                    return redirect(url_for('select_meter'))
-        except Error as dbe:
-            print(f"ERR select_pkg initDB: {dbe}")
-            flash(f"DB Fejl: {dbe}",'error')
-        except Exception as e:
-            print(f"ERR select_pkg init: {e}")
-            flash(f"Fejl: {str(e)}",'error')
-        finally:
-            if cursor: cursor.close()
-            if conn: safe_close_connection(conn)
     
     # Resten af den oprindelige kode
     if not sel: 
@@ -1208,57 +1444,29 @@ def select_package():
             if not conn: raise Error("DB fail")
             cursor=conn.cursor(dictionary=True); cursor.execute('SELECT * FROM stroem_pakker WHERE id=%s AND aktiv=1',(pid,)); pkg=cursor.fetchone()
             if not pkg: flash('Ugyldig pakke.','error'); raise Exception("Invalid package")
-            psize=float(pkg['enheder']); pname=pkg['navn']; cfg_id=sel['meter_config_id']; sid=sel['sensor_id']; start=sel['start_value']
             
-            print(f"DEBUG SELECT_PACKAGE KØB: Pakke ID={pid}, Størrelse={psize}, Måler ID={sid}, Startværdi={start}")
+            # Gem info til næste step (betaling)
+            session['pending_purchase'] = {
+                'meter': sel,
+                'package': {
+                    'id': pkg['id'],
+                    'navn': pkg['navn'],
+                    'enheder': float(pkg['enheder']),
+                    'pris': float(pkg['pris'])  # Gem prisen!
+                }
+            }
+            print(f"DEBUG: Gemmer pending_purchase: {session['pending_purchase']}")
+            return redirect(url_for('confirm_purchase'))
             
-            # Double-tjek startværdien ved at hente den direkte igen for at se, om der er forskel
-            sensor_read = sel.get('sensor_read_for_start') or sid
-            print(f"DEBUG SELECT_PACKAGE VERIFIKATION: Henter målerværdi igen for {sensor_read} for at sammenligne")
-            
-            # Ryd cache for sikkerhedens skyld
-            cache.delete(f"meter_value_{sensor_read}")
-            cache.delete(f"meter_value_{normalize_meter_id(sensor_read, True)}")
-            cache.delete(f"meter_value_{normalize_meter_id(sensor_read, False)}")
-            
-            current_value = get_meter_value(sensor_read)
-            print(f"DEBUG SELECT_PACKAGE VERIFIKATION: Original startværdi={start}, Nuværende værdi={current_value}")
-            
-            if current_value is not None and abs(float(start) - float(current_value)) > 0.5:
-                print(f"DEBUG SELECT_PACKAGE ADVARSEL: Stor forskel mellem startværdi ({start}) og nuværende værdi ({current_value})!")
-            
-            cursor.execute("SELECT booking_id FROM active_meters WHERE meter_id=%s AND booking_id!=%s",(sid,current_user.username))
-            if cursor.fetchone(): flash(trans['meter_already_active'],'error'); session.pop('selected_meter',None); raise Exception("Meter taken")
-            mod_cursor = conn.cursor(); mod_cursor.execute("SELECT id, package_size FROM active_meters WHERE booking_id=%s",(current_user.username,)); existing=mod_cursor.fetchone()
-            
-            if existing: 
-                # Ved køb af tillægspakke: Læg den nye pakkes enheder oven i de eksisterende
-                current_package_size = float(existing[1])
-                new_package_size = current_package_size + psize
-                mod_cursor.execute("UPDATE active_meters SET meter_id=%s,start_value=%s,package_size=%s WHERE id=%s",(sid,start,new_package_size,existing[0]))
-                print(f"DEBUG SELECT_PACKAGE UPDATE: Opdaterer eksisterende måler. ID={existing[0]}, Måler={sid}, Start={start}, Ny pakke={new_package_size}")
-            else: 
-                mod_cursor.execute("INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, created_at) VALUES (%s, %s, %s, %s, NOW())",(current_user.username,sid,start,psize))
-                print(f"DEBUG SELECT_PACKAGE INSERT: Indsætter ny måler. Bruger={current_user.username}, Måler={sid}, Start={start}, Pakke={psize}")
-            rows_affected = mod_cursor.rowcount; mod_cursor.close()
-            if rows_affected > 0:
-                 try: # Log (standard cursor)
-                     log_cursor=conn.cursor()
-                     # FJERN koebs_tidspunkt
-                     log_cursor.execute('INSERT INTO stroem_koeb (booking_id,pakke_id,maaler_id,enheder_tilbage) VALUES (%s,%s,%s,%s)',(current_user.username,pid,cfg_id,psize))
-                     log_cursor.close()
-                 except Error as loge: print(f"WARN select_pkg log: {loge}") # Fortsæt selvom log fejler
-                 except Exception as logge: print(f"WARN select_pkg log Gen: {logge}")
-                 conn.commit(); session.pop('selected_meter',None); flash(f'Måler {sid} ({sel["display_name"]}) og pakke "{pname}" aktiveret!','success')
-                 if cursor: cursor.close(); cursor=None
-                 if conn: safe_close_connection(conn); conn=None
-                 return redirect(url_for('stroem_dashboard'))
-            else: conn.rollback(); flash("Fejl: Kunne ikke opdatere målerinfo.", "danger")
-        except Error as dbe: print(f"ERR select_pkg POST DB: {dbe}"); flash(f"DB Fejl: {dbe}",'error'); conn.rollback()
-        except Exception as e: print(f"ERR select_pkg POST Gen: {e}"); flash(f"Fejl: {str(e)}",'error'); conn.rollback()
+        except Error as dbe: 
+            print(f"ERR select_pkg POST DB: {dbe}")
+            flash(f"DB Fejl: {dbe}", 'error')
+            if conn: conn.rollback()
+        except Exception as e: 
+            print(f"ERR select_pkg POST Gen: {e}")
+            flash(f"Fejl: {str(e)}", 'error')
+            if conn: conn.rollback()
         finally:
-            if 'mod_cursor' in locals() and mod_cursor: mod_cursor.close()
-            if 'log_cursor' in locals() and log_cursor: log_cursor.close()
             if cursor: cursor.close()
             if conn: safe_close_connection(conn)
         return redirect(url_for('select_package'))
@@ -1268,15 +1476,23 @@ def select_package():
         try:
             conn=get_db_connection()
             if conn:
-                 cursor=conn.cursor(dictionary=True); cursor.execute('SELECT plads_type FROM aktive_bookinger WHERE booking_id=%s',(current_user.username,)); b=cursor.fetchone(); gtype=b['plads_type'].upper() if b and b.get('plads_type') else 'KØRENDE'
-                 ptype='SAESON' if gtype=='SÆSON' else 'DAGS'; cursor.execute("SELECT * FROM stroem_pakker WHERE type=%s AND aktiv=1 ORDER BY enheder,dage,pris",(ptype,)); pkgs=cursor.fetchall()
-            else: flash(trans['error_db_connection'],'error')
-        except Error as dbe: print(f"ERR select_pkg GET DB: {dbe}"); flash(f"DB Fejl: {dbe}",'error')
-        except Exception as e: print(f"ERR select_pkg GET Gen: {e}"); flash(f"Fejl: {str(e)}",'error')
+                 cursor=conn.cursor(dictionary=True); 
+                 cursor.execute('SELECT plads_type FROM aktive_bookinger WHERE booking_id=%s',(current_user.username,)); 
+                 b=cursor.fetchone(); 
+                 gtype=b['plads_type'].upper() if b and b.get('plads_type') else 'KØRENDE'
+                 ptype='SAESON' if gtype=='SÆSON' else 'DAGS'; 
+                 cursor.execute("SELECT * FROM stroem_pakker WHERE aktiv=1 AND type=%s ORDER BY pris", (ptype,)); 
+                 pkgs=cursor.fetchall()
+        except Error as dbe: 
+            print(f"ERR select_pkg GET DB: {dbe}")
+            flash(f"DB Fejl: {dbe}", 'error')
+        except Exception as e: 
+            print(f"ERR select_pkg GET Gen: {e}")
+            flash(f"Fejl: {str(e)}", 'error')
         finally:
             if cursor: cursor.close()
             if conn: safe_close_connection(conn)
-        return render_template('select_package.html',packages=pkgs, selected_meter=sel, translations=trans, guest_type=gtype)
+        return render_template('select_package.html', packages=pkgs, selected_meter=sel, translations=trans, guest_type=gtype)
 
 @app.route('/admin_connect_meter', methods=['POST'])
 @admin_required
@@ -1341,7 +1557,7 @@ def admin_connect_meter():
         log_note = f"Admin tilknyttede måler: {current_user.username}"
         cursor.execute(
             "INSERT INTO stroem_koeb (booking_id, pakke_id, maaler_id, enheder_tilbage) VALUES (%s, %s, %s, %s)",
-            (booking_id, 1, meter_config_id, package_size)
+            (booking_id, 1, meter_id, package_size)
         )
         
         # Aktivér målerens kontakt, hvis den har en
@@ -1398,7 +1614,359 @@ def redirect(location, **kwargs):
 import flask
 flask.redirect = redirect
 
+# --- Stripe betalingsruter ---
+@app.route('/confirm_purchase')
+@login_required
+def confirm_purchase():
+    lang = session.get('language', 'da')
+    trans = translations.get(lang, translations['da'])
+    
+    # Tjek om der er et ventende køb i sessionen
+    pending = session.get('pending_purchase')
+    if not pending:
+        flash('Ingen pakke valgt. Vælg venligst en pakke først.', 'warning')
+        return redirect(url_for('select_package'))
+    
+    # Hent brugeroplysninger til visning
+    user_info = None
+    try:
+        conn = get_db_connection()
+        if conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute('SELECT * FROM aktive_bookinger WHERE booking_id=%s', (current_user.username,))
+            user_info = cursor.fetchone()
+            cursor.close()
+            safe_close_connection(conn)
+    except Exception as e:
+        print(f"FEJL ved hentning af brugerdata: {e}")
+    
+    # Hent Stripe publishable key
+    stripe_keys = get_stripe_keys()
+    publishable_key = stripe_keys.get('publishable_key')
+    
+    # Vis bekræftelsessiden
+    return render_template(
+        'confirm_purchase.html', 
+        pending=pending, 
+        user=user_info,
+        stripe_key=publishable_key,
+        translations=trans
+    )
+
+@app.route('/create_checkout_session', methods=['POST'])
+@login_required
+def create_checkout_session():
+    # Hent Stripe keys og initialiser Stripe
+    stripe_keys = get_stripe_keys()
+    if not stripe_keys.get('secret_key'):
+        flash('Stripe er ikke konfigureret korrekt. Kontakt venligst administratoren.', 'error')
+        return redirect(url_for('select_package'))
+    
+    stripe.api_key = stripe_keys.get('secret_key')
+    
+    # Hent købsinformation fra session
+    pending = session.get('pending_purchase')
+    if not pending:
+        flash('Ingen pakke valgt. Vælg venligst en pakke først.', 'warning')
+        return redirect(url_for('select_package'))
+    
+    package = pending.get('package', {})
+    meter = pending.get('meter', {})
+    
+    try:
+        # Opret Checkout Session
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'dkk',
+                    'product_data': {
+                        'name': f"Strømpakke: {package.get('navn')}",
+                        'description': f"{package.get('enheder')} enheder til måler {meter.get('display_name')}"
+                    },
+                    'unit_amount': int(float(package.get('pris')) * 100),  # Konverter til ører
+                },
+                'quantity': 1,
+            }],
+            mode='payment',
+            success_url=url_for('payment_success', _external=True) + '?session_id={CHECKOUT_SESSION_ID}',
+            cancel_url=url_for('payment_cancel', _external=True),
+            client_reference_id=current_user.username,
+            metadata={
+                'package_id': package.get('id'),
+                'meter_id': meter.get('sensor_id'),
+                'meter_config_id': meter.get('meter_config_id'),
+                'start_value': meter.get('start_value'),
+                'enheder': package.get('enheder')
+            }
+        )
+        
+        return redirect(checkout_session.url, code=303)
+    except Exception as e:
+        print(f"Stripe fejl: {e}")
+        flash(f"Der opstod en fejl under opsætning af betalingen: {str(e)}", 'error')
+        return redirect(url_for('confirm_purchase'))
+
+@app.route('/payment_success')
+@login_required
+def payment_success():
+    session_id = request.args.get('session_id')
+    if not session_id:
+        flash('Betalingsinformation mangler.', 'warning')
+        return redirect(url_for('select_package'))
+    
+    try:
+        # Hent Stripe keys og initialiser Stripe
+        stripe_keys = get_stripe_keys()
+        stripe.api_key = stripe_keys.get('secret_key')
+        
+        # Hent session detaljer
+        checkout_session = stripe.checkout.Session.retrieve(session_id)
+        
+        # Tjek om betalingen er gennemført
+        if checkout_session.payment_status != 'paid':
+            flash('Betalingen er ikke gennemført endnu.', 'warning')
+            return redirect(url_for('stroem_dashboard'))
+        
+        # Hent metadata fra sessionen
+        metadata = checkout_session.metadata
+        package_id = metadata.get('package_id')
+        meter_id = metadata.get('meter_id')
+        meter_config_id = metadata.get('meter_config_id')
+        start_value = metadata.get('start_value')
+        enheder = float(metadata.get('enheder', 0))
+        
+        # Aktiver pakken i databasen
+        conn = None
+        cursor = None
+        try:
+            conn = get_db_connection()
+            if not conn:
+                raise Exception("Kunne ikke oprette forbindelse til databasen")
+            
+            cursor = conn.cursor(dictionary=True)
+            
+            # Tjek om brugeren allerede har en aktiv måler
+            cursor.execute("SELECT id, package_size FROM active_meters WHERE booking_id=%s", (current_user.username,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Ved køb af tillægspakke: Læg den nye pakkes enheder oven i de eksisterende
+                current_package_size = float(existing['package_size'])
+                new_package_size = current_package_size + enheder
+                cursor.execute(
+                    "UPDATE active_meters SET meter_id=%s, start_value=%s, package_size=%s WHERE id=%s",
+                    (meter_id, start_value, new_package_size, existing['id'])
+                )
+                print(f"DEBUG PAYMENT_SUCCESS: Opdaterer eksisterende måler. ID={existing['id']}, Måler={meter_id}, Start={start_value}, Ny pakke={new_package_size}")
+            else:
+                cursor.execute(
+                    "INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, created_at) VALUES (%s, %s, %s, %s, NOW())",
+                    (current_user.username, meter_id, start_value, enheder)
+                )
+                print(f"DEBUG PAYMENT_SUCCESS: Indsætter ny måler. Bruger={current_user.username}, Måler={meter_id}, Start={start_value}, Pakke={enheder}")
+            
+            rows_affected = cursor.rowcount
+            
+            if rows_affected > 0:
+                # Hent pakkeinformation
+                cursor.execute('SELECT navn FROM stroem_pakker WHERE id=%s', (package_id,))
+                package_info = cursor.fetchone()
+                package_name = package_info['navn'] if package_info else "Ukendt pakke"
+
+                # Log købet - Hent først det korrekte måler-ID fra databasen
+                log_cursor = conn.cursor(dictionary=True)
+
+                try:
+                    # Hent det rigtige måler-ID baseret på sensor_id
+                    log_cursor.execute('SELECT id FROM stroem_maalere WHERE sensor_id=%s', (meter_id,))
+                    meter_record = log_cursor.fetchone()
+    
+                    if meter_record and 'id' in meter_record:
+                        actual_meter_id = meter_record['id']
+                        print(f"DEBUG: Fandt måler-ID: {actual_meter_id} for sensor: {meter_id}")
+                        log_cursor.execute(
+                            'INSERT INTO stroem_koeb (booking_id, pakke_id, maaler_id, enheder_tilbage) VALUES (%s, %s, %s, %s)',
+                            (current_user.username, package_id, actual_meter_id, enheder)
+                        )
+                    else:
+                        print(f"ADVARSEL: Kunne ikke finde måler-ID for sensor: {meter_id}")
+                        # Forsøg at indsætte uden måler-ID (hvis tilladt af databasen)
+                        log_cursor.execute(
+                            'INSERT INTO stroem_koeb (booking_id, pakke_id, enheder_tilbage) VALUES (%s, %s, %s)',
+                            (current_user.username, package_id, enheder)
+                        )
+                except Exception as log_error:
+                    print(f"FEJL ved logning af køb: {log_error}")
+
+                log_cursor.close()
+                
+                # Commit transaktionen
+                conn.commit()
+                
+                # Send kvittering via e-mail
+                try:
+                    # Hent brugerens e-mail
+                    user_cursor = conn.cursor(dictionary=True)
+                    user_cursor.execute('SELECT email, fornavn, efternavn FROM aktive_bookinger WHERE booking_id=%s', (current_user.username,))
+                    user_data = user_cursor.fetchone()
+                    user_cursor.close()
+                    
+                    if user_data and user_data.get('email'):
+                        user_name = f"{user_data.get('fornavn', '')} {user_data.get('efternavn', '')}".strip()
+                        # Hent målerens navn
+                        meter_display_name = ""
+                        pending = session.get('pending_purchase', {})
+                        meter = pending.get('meter', {})
+                        if meter:
+                            meter_display_name = meter.get('display_name', meter_id)
+                        
+                        # Send kvittering
+                        send_purchase_receipt(
+                            user_data['email'],
+                            user_name,
+                            package_name,
+                            enheder,
+                            float(checkout_session.amount_total) / 100,  # Konverter fra ører til kroner
+                            datetime.now(),
+                            meter_display_name
+                        )
+                except Exception as email_error:
+                    print(f"FEJL ved afsendelse af kvittering: {email_error}")
+                
+                # Ryd session data
+                session.pop('pending_purchase', None)
+                session.pop('selected_meter', None)
+                
+                flash(f'Betaling gennemført! Måler {meter_id} og pakke "{package_name}" er nu aktiveret.', 'success')
+            else:
+                conn.rollback()
+                flash("Fejl: Kunne ikke opdatere målerinfo.", "danger")
+        
+        except Exception as db_error:
+            if conn:
+                conn.rollback()
+            print(f"Database fejl ved aktivering af pakke: {db_error}")
+            flash(f"Der opstod en fejl ved aktivering af din pakke: {str(db_error)}", 'error')
+        finally:
+            if cursor: cursor.close()
+            if conn: safe_close_connection(conn)
+        
+        return redirect(url_for('stroem_dashboard'))
+    
+    except Exception as e:
+        print(f"Fejl ved behandling af betaling: {e}")
+        flash(f"Der opstod en fejl ved behandling af din betaling: {str(e)}", 'error')
+        return redirect(url_for('stroem_dashboard'))
+
+@app.route('/payment_cancel')
+@login_required
+def payment_cancel():
+    flash('Betalingen blev annulleret.', 'warning')
+    return redirect(url_for('confirm_purchase'))
+
+@app.route('/webhook', methods=['POST'])
+def stripe_webhook():
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    
+    stripe_keys = get_stripe_keys()
+    webhook_secret = stripe_keys.get('webhook_secret')
+    
+    if not webhook_secret:
+        print("ADVARSEL: Stripe webhook hemmelig nøgle ikke konfigureret")
+        return jsonify({'status': 'error', 'message': 'Webhook ikke konfigureret'}), 400
+    
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, webhook_secret
+        )
+    except ValueError as e:
+        print(f"Ugyldig Stripe webhook payload: {e}")
+        return jsonify({'status': 'error', 'message': 'Ugyldig payload'}), 400
+    except stripe.error.SignatureVerificationError as e:
+        print(f"Ugyldig Stripe webhook signatur: {e}")
+        return jsonify({'status': 'error', 'message': 'Ugyldig signatur'}), 400
+    
+    # Håndter specifikke event typer
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        print(f"Checkout session completed: {session.id}")
+        
+        # Her kunne man implementere asynkron håndtering af betalingen
+        # f.eks. via en baggrundsproces eller en kø
+        # Dette ville være nyttigt i situationer hvor brugeren ikke bliver sendt tilbage til success siden
+        
+    return jsonify({'status': 'success'}), 200
+
 # --- App Execution ---
+@app.route('/start_purchase')
+@login_required
+def start_purchase():
+    """
+    Funktion der tjekker om brugeren allerede har en aktiv måler.
+    Hvis ja, sendes de direkte til pakkevalg.
+    Hvis nej, sendes de til målervalg.
+    """
+    print(f"\n===== START PURCHASE CHECK (Bruger: {current_user.username}) =====")
+    conn = None
+    cursor = None
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            flash('Database forbindelse fejlede.', 'error')
+            return redirect(url_for('stroem_dashboard'))
+            
+        cursor = conn.cursor(dictionary=True)
+        
+        # Tjek om brugeren allerede har en aktiv måler
+        cursor.execute("SELECT * FROM active_meters WHERE booking_id=%s", (current_user.username,))
+        existing_meter = cursor.fetchone()
+        
+        if existing_meter and existing_meter.get('meter_id'):
+            # Brugeren har allerede en måler - hent målerdata og gem i session
+            meter_id = existing_meter.get('meter_id')
+            start_value = existing_meter.get('start_value', 0)
+            
+            # Hent måler konfigurationsdata
+            cursor.execute("SELECT * FROM meter_config WHERE sensor_id=%s", (meter_id,))
+            cfg = cursor.fetchone()
+            
+            if cfg:
+                # Gem målerinformation i sessionen så den er klar til pakkevalg
+                session['selected_meter'] = {
+                    'meter_config_id': cfg['id'],
+                    'sensor_id': cfg['sensor_id'],
+                    'display_name': cfg.get('display_name', cfg['sensor_id']),
+                    'start_value': start_value,
+                    'sensor_read_for_start': cfg.get('energy_sensor_id') or cfg['sensor_id']
+                }
+                print(f"DEBUG START_PURCHASE: Bruger har allerede måler {meter_id}. Sender direkte til pakkevalg.")
+                flash(f"Fortsætter med eksisterende måler: {cfg.get('display_name', meter_id)}", 'info')
+                return redirect(url_for('select_package'))
+            else:
+                # Måler findes ikke i konfiguration - noget er galt
+                print(f"FEJL START_PURCHASE: Måler {meter_id} ikke fundet i konfiguration")
+                flash('Der opstod en fejl ved hentning af målerdata. Vælg venligst en måler igen.', 'error')
+        
+        # Ingen eksisterende måler, eller fejl i målerdata - send til målervalg
+        print(f"DEBUG START_PURCHASE: Bruger har ingen måler. Sender til målervalg.")
+        return redirect(url_for('select_meter'))
+        
+    except Error as dbe:
+        print(f"FEJL start_purchase DB: {dbe}")
+        flash('Database fejl. Prøv igen senere.', 'error')
+    except Exception as e:
+        print(f"FEJL start_purchase Gen: {e}")
+        flash(f'Der opstod en fejl: {str(e)}', 'error')
+    finally:
+        if cursor: cursor.close()
+        if conn: safe_close_connection(conn)
+    
+    # Ved fejl, gå til dashboard
+    return redirect(url_for('stroem_dashboard'))
+
 if __name__ == '__main__':
     print("Starter Flask app...")
     app.run(host='0.0.0.0', port=5000, debug=True)
