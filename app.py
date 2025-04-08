@@ -87,7 +87,7 @@ def get_power_meters():
 def normalize_meter_id(meter_id, include_energy_total=True):
     if not meter_id: return None; meter_id = meter_id.strip()
     if not meter_id.startswith('sensor.'): meter_id = f"sensor.{meter_id}"
-    suffixes = ['_energy_total','_power','_current','_voltage']; has_suffix = any(s in meter_id for s in suffixes)
+    suffixes = ['_energy_total','_power','_current','_voltage']; has_suffix = any(meter_id.endswith(s) for s in suffixes)
     if include_energy_total and not has_suffix: meter_id = f"{meter_id}_energy_total"
     return meter_id
 
