@@ -84,7 +84,6 @@ def get_power_meters():
     except requests.exceptions.RequestException as e: print(f"Fejl HA meters (req): {e}"); return []
     except Exception as e: print(f"Fejl HA meters: {e}"); return []
 
-
 def normalize_meter_id(meter_id, include_energy_total=True):
     if not meter_id: return None; meter_id = meter_id.strip()
     if not meter_id.startswith('sensor.'): meter_id = f"sensor.{meter_id}"
@@ -95,24 +94,32 @@ def normalize_meter_id(meter_id, include_energy_total=True):
 @cache.cached(timeout=15, key_prefix='meter_value_')
 def get_meter_value(meter_id_original):
     if not meter_id_original or not HASS_URL or not HASS_TOKEN: return None
-    headers={"Authorization": f"Bearer {HASS_TOKEN}"}; ids_to_try=[]
-    id1=normalize_meter_id(meter_id_original,False); id2=normalize_meter_id(meter_id_original,True)
-    if id1: ids_to_try.append(id1)
-    if id2 and id2 != id1: ids_to_try.append(id2)
-    if meter_id_original.startswith('sensor.') and meter_id_original not in ids_to_try: ids_to_try.append(meter_id_original)
-    for attempt_id in ids_to_try:
+    # Normalisér meter_id
+    id1 = normalize_meter_id(meter_id_original, False)
+    id2 = normalize_meter_id(meter_id_original, True)
+    
+    # Forsøg først med den mest sandsynlige version
+    for meter_id in [id2, id1]:  # Prøv først med _energy_total
         try:
-            url=f"{HASS_URL}/api/states/{attempt_id}";
-            resp=requests.get(url,headers=headers,timeout=7)
-            if resp.status_code==200:
-                data=resp.json(); state=data.get('state');
-                if state is not None and state not in ['unavailable','unknown','']:
-                    try: val=float(state); print(f"SUCCESS get: Val={val} for {attempt_id}"); return val
-                    except: print(f"WARN get: Convert fail '{state}' {attempt_id}")
-        except requests.exceptions.Timeout: print(f"ERR get: Timeout {attempt_id}")
-        except requests.exceptions.RequestException as e: print(f"ERR get: Req fail {attempt_id}: {e}")
-        except Exception as e: print(f"ERR get: Unexpected {attempt_id}: {e}")
-    print(f"ERR get: Failed all for '{meter_id_original}'. Clearing cache."); cache.delete(f"meter_value_{meter_id_original}")
+            print(f"DEBUG: Forsøger at hente værdi for {meter_id}")
+            r = requests.get(f"{HASS_URL}/api/states/{meter_id}", 
+                            headers={"Authorization": f"Bearer {HASS_TOKEN}"},
+                            timeout=10)
+            if r.status_code == 200:
+                rj = r.json()
+                if "state" in rj and rj["state"] not in ["unavailable", "unknown", None]:
+                    try:
+                        val = float(rj["state"])
+                        print(f"SUCCESS get: Val={val} for {meter_id}")
+                        return val
+                    except (ValueError, TypeError):
+                        print(f"WARN get: Ugyldig værdi '{rj['state']}' for {meter_id}")
+                else:
+                    print(f"WARN get: Ugyldig state for {meter_id}")
+            else:
+                print(f"WARN get: HTTP {r.status_code} for {meter_id}")
+        except Exception as e:
+            print(f"WARN get: Exception for {meter_id}: {e}")
     return None
 
 def get_switch_state(switch_id):
@@ -496,6 +503,10 @@ def admin_remove_meter():
         if not conn: raise Error("DB fail")
         cursor=conn.cursor(); cursor.execute("DELETE FROM active_meters WHERE booking_id=%s AND meter_id=%s",(bid,mid)); rows=cursor.rowcount
         if rows>0:
+            # Ryd cachen for denne måler for at sikre friske værdier
+            cache.delete(f"meter_value_{mid}")
+            cache.delete(f"meter_value_{normalize_meter_id(mid, True)}")
+            cache.delete(f"meter_value_{normalize_meter_id(mid, False)}")
             psid=None;
             try:
                  ccfg=conn.cursor(dictionary=True); ccfg.execute("SELECT power_switch_id FROM meter_config WHERE sensor_id=%s",(mid,)); cfg=ccfg.fetchone(); ccfg.close()
@@ -504,8 +515,11 @@ def admin_remove_meter():
                  if psid and HASS_URL and HASS_TOKEN: requests.post(f"{HASS_URL}/api/services/switch/turn_off",headers={"Authorization":f"Bearer {HASS_TOKEN}"},json={"entity_id":psid},timeout=10)
             except Exception as swe: print(f"WARN remove switch: {swe}")
             try: # Log (med korrekte parametre)
-                 log_cursor=conn.cursor(); log_note=f"Admin remove: {current_user.username}"; log_cursor.execute("""INSERT INTO package_logs (booking_id, meter_id, package_name, units_added, admin_action, notes, action_timestamp) VALUES (%s,%s,'Fjernet (Admin)',0,1,%s,NOW())""",(bid,mid,log_note)); log_cursor.close()
+                 log_cursor=conn.cursor()
+                 # FJERN switch_id fra INSERT
+                 log_cursor.execute("""INSERT INTO package_logs (booking_id, meter_id, package_name, units_added, admin_action, notes, action_timestamp) VALUES (%s,%s,'Fjernet (Admin)',0,1,%s,NOW())""",(bid,mid,f"Admin remove: {current_user.username}")); log_cursor.close()
             except Error as loge: print(f"WARN remove log: {loge}")
+            except Exception as logge: print(f"WARN remove log Gen: {logge}")
             conn.commit(); flash(f'Måler {mid} fjernet fra {bid}.','success')
         else: flash(f'Ingen link {mid}/{bid}.','warning'); conn.rollback()
     except Error as dbe: print(f"ERR remove DB: {dbe}"); flash(f'DB Fejl: {dbe}','danger'); conn.rollback()
@@ -531,8 +545,8 @@ def admin_meter_config():
             try:
                 conn=get_db_connection();
                 if not conn: raise Error("DB fail")
-                cursor=conn.cursor(); check_sql="SELECT id FROM meter_config WHERE sensor_id=%s"+(" AND id!=%s" if cid else ""); params=(sid,cid) if cid else (sid,); cursor.execute(check_sql,params)
-                if cursor.fetchone(): flash(f'Sensor ID {sid} eksisterer.','error')
+                cursor=conn.cursor(dictionary=True); cursor.execute("SELECT id FROM meter_config WHERE sensor_id=%s"+(" AND id!=%s" if cid else ""), (sid,cid) if cid else (sid,)); cfg=cursor.fetchone()
+                if cfg: flash(f'Sensor ID {sid} eksisterer.','error')
                 else: # Gem/Opdater
                     if cid: sql,params='''UPDATE meter_config SET sensor_id=%s,display_name=%s,location=%s,is_active=%s,energy_sensor_id=%s,power_switch_id=%s WHERE id=%s''', (sid,dname,loc,active,esid,psid,cid); msg='Opdateret.'
                     else: sql,params='''INSERT INTO meter_config (sensor_id,display_name,location,is_active,energy_sensor_id,power_switch_id) VALUES (%s,%s,%s,%s,%s,%s)''', (sid,dname,loc,active,esid,psid); msg='Tilføjet.'
@@ -720,7 +734,8 @@ def stroem_dashboard():
         cursor.close(); cursor = None; safe_close_connection(conn); conn = None # Luk DB
         if not meter_id: print(f"DEBUG stroem_dash: Ingen meter_id for '{current_user.username}'. Redirect."); flash(trans['error_no_active_meter'], 'info'); return redirect(url_for('select_meter'))
         print(f"DEBUG stroem_dash: Fundet meter='{meter_id}'")
-        try: start_value = float(db_start if db_start is not None else 0.0); package_size = float(db_pkg if db_pkg is not None else 0.0);
+        try:
+            start_value = float(db_start if db_start is not None else 0.0); package_size = float(db_pkg if db_pkg is not None else 0.0);
         except (ValueError, TypeError) as e: print(f"ERR stroem_dash: Invalid DB vals: {e}"); flash(trans['error_invalid_values'], 'error'); return redirect(url_for('select_meter'))
         if package_size <= 0: package_size = 0.001
 
@@ -744,7 +759,9 @@ def stroem_dashboard():
         if not power_switch_id and meter_id.startswith('sensor.'): base=meter_id.split('.')[1].split('_')[0]; power_switch_id=f"switch.{base}_0"
 
         power_switch_state = get_switch_state(power_switch_id)
-        if is_meter_online_flag and power_switch_state in ['unavailable', 'unknown']: print(f"WARN stroem_dash: Sensor {meter_id} online, men switch {power_switch_id} er {power_switch_state}"); flash(f"Advarsel: Kan ikke styre strøm, kontakt ({power_switch_id}) utilgængelig.","error"); return redirect(url_for('stroem_dashboard'))
+        if is_meter_online_flag and power_switch_state in ['unavailable', 'unknown']: 
+            print(f"WARN stroem_dash: Sensor {meter_id} online, men switch {power_switch_id} er {power_switch_state}")
+            flash(f"Advarsel: Kan ikke styre strøm, kontakt ({power_switch_id}) utilgængelig.","warning")
         return render_template('stroem_dashboard.html', translations=trans, error_message=error_message, current_value=current_value_disp, start_value=start_value_disp, total_usage=total_usage_disp, remaining=remaining_disp, meter_id=meter_id, unit_text=unit_text, percentage=percentage, package_size=package_size, power_switch_state=power_switch_state, power_switch_id=power_switch_id, updated=get_formatted_timestamp(time_format), is_meter_online=is_meter_online_flag)
     except Error as db_e_main: print(f"FATAL stroem_dash DB: {db_e_main}"); flash(trans['error_db_connection'],'error'); return redirect(url_for('select_meter'))
     except Exception as e_main: print(f"FATAL stroem_dash Gen: {str(e_main)}"); traceback.print_exc(); flash(f"{trans['error_reading_data']}: {str(e_main)}",'error'); return redirect(url_for('select_meter'))
@@ -757,25 +774,80 @@ def stroem_dashboard():
 @app.route('/select_meter', methods=['GET', 'POST'])
 @login_required
 def select_meter():
-    lang=session.get('language','da'); trans=translations.get(lang,translations['da']); conn=None; cursor=None
-    if request.method=='POST':
-        mid=request.form.get('meter_id');
+    lang=session.get('language','da'); trans=translations.get(lang,translations['da'])
+    if request.method == 'POST':
+        mid=request.form.get('meter_id')
         if not mid: flash(trans['error_no_meter'],'error'); return redirect(url_for('select_meter'))
+        conn=None; cursor=None
         try:
-            conn=get_db_connection();
-            if not conn: raise Error("DB fail")
+            conn=get_db_connection()
+            if not conn: flash('Database forbindelse fejlede.','error'); raise Exception("DB fail")
             cursor=conn.cursor(dictionary=True); cursor.execute("SELECT * FROM meter_config WHERE sensor_id=%s AND is_active=1",(mid,)); cfg=cursor.fetchone()
             if not cfg: flash(trans['error_invalid_meter'],'error'); raise Exception(f"No config {mid}")
             cursor.execute("SELECT booking_id FROM active_meters WHERE meter_id=%s AND booking_id!=%s",(mid,current_user.username))
-            if cursor.fetchone(): flash(trans['meter_already_active'],'error'); raise Exception("Meter taken")
-            sread=cfg.get('energy_sensor_id') or cfg['sensor_id']; curr=get_meter_value(sread)
+            if cursor.fetchone(): flash(trans['meter_already_active'],'error'); session.pop('selected_meter',None); raise Exception("Meter taken")
+            
+            # Hent målerværdi fra Home Assistant - Detaljeret fejlsøgning
+            sread=cfg.get('energy_sensor_id') or cfg['sensor_id']
+            print(f"DEBUG SELECT_METER VIGTIG: Bruger={current_user.username}, Måler ID from form={mid}, Måler ID for læsning={sread}")
+            
+            # Ryd cache for alle relaterede målerværdier før vi henter
+            cache.delete(f"meter_value_{sread}")
+            cache.delete(f"meter_value_{normalize_meter_id(sread, True)}")
+            cache.delete(f"meter_value_{normalize_meter_id(sread, False)}")
+            
+            # Hent målerværdi direkte (uden caching)
+            print(f"DEBUG SELECT_METER DIREKTE KALD: Henter målerværdi for {sread} uden brug af cache")
+            curr = None
+            for meter_variant in [sread, normalize_meter_id(sread, True), normalize_meter_id(sread, False)]:
+                if curr is not None:
+                    break
+                try:
+                    print(f"DEBUG SELECT_METER: Prøver variant {meter_variant}")
+                    r = requests.get(f"{HASS_URL}/api/states/{meter_variant}", 
+                                    headers={"Authorization": f"Bearer {HASS_TOKEN}"},
+                                    timeout=10)
+                    if r.status_code == 200:
+                        rj = r.json()
+                        if "state" in rj and rj["state"] not in ["unavailable", "unknown", None]:
+                            try:
+                                curr_val = float(rj["state"])
+                                print(f"DEBUG SELECT_METER SUCCESS: Variant {meter_variant} gav værdi {curr_val}")
+                                curr = curr_val
+                            except (ValueError, TypeError) as e:
+                                print(f"DEBUG SELECT_METER ERROR: Kunne ikke konvertere værdi for {meter_variant}: {e}")
+                        else:
+                            print(f"DEBUG SELECT_METER ERROR: Ugyldig state for {meter_variant}: {rj.get('state')}")
+                    else:
+                        print(f"DEBUG SELECT_METER ERROR: HTTP {r.status_code} for {meter_variant}")
+                except Exception as e:
+                    print(f"DEBUG SELECT_METER ERROR: Exception for {meter_variant}: {e}")
+            
+            # Brug normal get_meter_value som fallback
+            if curr is None:
+                print(f"DEBUG SELECT_METER FALLBACK: Direkte kald fejlede, prøver normal get_meter_value")
+                curr = get_meter_value(sread)
+                
+            print(f"DEBUG SELECT_METER ENDELIG VÆRDI: {curr}, type: {type(curr)}")
+            
             if curr is None or not isinstance(curr,(int,float)): 
                 flash(f"Måler '{cfg.get('display_name',mid)}' er offline eller returnerer en ugyldig værdi. Prøv igen senere eller kontakt administrator hvis problemet fortsætter.",'error')
-                cache.delete(f"meter_value_{sread}")
+                session.pop('selected_meter', None)  # Ryd session hvis værdien er ugyldig
                 raise Exception("Invalid start value")
-            session['selected_meter']={'meter_config_id':cfg['id'],'sensor_id':cfg['sensor_id'],'display_name':cfg['display_name'],'start_value':curr,'sensor_read_for_start':sread}
-            flash(trans['success_meter_selected'],'success'); return redirect(url_for('select_package'))
-        except Exception as e: print(f"ERR select_meter POST: {e}"); session.pop('selected_meter',None); return redirect(url_for('select_meter'))
+                
+            # Gem måler information i sessionen
+            print(f"DEBUG SELECT_METER SESSION GEM: Gemmer måler i session med startværdi: {curr}")
+            session['selected_meter'] = {
+                'meter_config_id': cfg['id'],
+                'sensor_id': cfg['sensor_id'],
+                'display_name': cfg.get('display_name', cfg['sensor_id']),
+                'start_value': curr,
+                'sensor_read_for_start': sread
+            }
+            flash(f"Måler '{cfg.get('display_name',mid)}' valgt med startværdi {curr}",'success')
+            return redirect(url_for('select_package'))
+        except Exception as e:
+            print(f"ERR select_meter POST: {e}"); session.pop('selected_meter',None); return redirect(url_for('select_meter'))
         finally:
             if cursor: cursor.close()
             if conn: safe_close_connection(conn)
@@ -1013,9 +1085,9 @@ def check_package_status():
                                      try: # Log
                                          lcur = conn.cursor()
                                          # FJERN switch_id fra INSERT
-                                         lcur.execute("""INSERT INTO power_events (user_id,event_type,meter_id,details,event_timestamp) VALUES (%s,'auto_power_off_empty',%s,%s,NOW())""", (uid,mid,f"Pakke tom. Brug:{usage:.3f}, Pkg:{pkg:.3f}")); conn.commit(); lcur.close()
-                                     except Error as loge: print(f"ERR check_pkg log DB: {loge}"); conn.rollback()
-                                     except Exception as logge: print(f"ERR check_pkg log Gen: {logge}"); conn.rollback()
+                                         lcur.execute("""INSERT INTO power_events (user_id,event_type,meter_id,details,event_timestamp) VALUES (%s,'auto_power_off_empty',%s,%s,NOW())""", (uid,mid,f"Pakke tom. Brug:{usage:.3f}, Pkg:{pkg:.3f}")); lcur.close()
+                                     except Error as loge: print(f"WARN check_pkg log DB: {loge}"); conn.rollback()
+                                     except Exception as logge: print(f"WARN check_pkg log Gen: {logge}"); conn.rollback()
                                 else: print(f"ERR check_pkg: Off fail {psid} ({pr.status_code})")
                            # elif sr.status_code!=200: print(f"WARN check_pkg: Get state fail {psid} ({sr.status_code})")
                       except Exception as swe: print(f"ERR check_pkg switch {psid}: {swe}")
@@ -1044,11 +1116,11 @@ def check_and_remove_inactive_users():
                  if psid:
                     try: requests.post(f"{HASS_URL}/api/services/switch/turn_off", headers={"Authorization":f"Bearer {HASS_TOKEN}"}, json={"entity_id":psid}, timeout=10)
                     except Exception as swe: print(f"WARN inactive switch {psid}: {swe}")
-                 try: # Log ...
-                      cl=conn.cursor()
-                      # FJERN switch_id fra INSERT
-                      cl.execute("""INSERT INTO power_events (user_id,event_type,meter_id,details,event_timestamp) VALUES (%s,'auto_release_inactive',%s,%s,NOW())""", (uid,mid,f"Bruger {bid} ej aktiv. Måler frigivet.")); cl.close()
-                 except Error as loge: print(f"WARN inactive log {uid}: {loge}")
+                 try: # Log (med korrekte parametre)
+                     log_cursor=conn.cursor()
+                     # FJERN switch_id fra INSERT
+                     log_cursor.execute("""INSERT INTO power_events (user_id,event_type,meter_id,details,event_timestamp) VALUES (%s,'auto_release_inactive',%s,%s,NOW())""", (uid,mid,f"Bruger {bid} ej aktiv. Måler frigivet.")); log_cursor.close()
+                 except Error as loge: print(f"WARN inactive log: {loge}")
                  cd=conn.cursor(); cd.execute("DELETE FROM active_meters WHERE id=%s",(u['amid'],)); deleted=cd.rowcount; cd.close()
                  if deleted>0: conn.commit(); print(f"SUCCESS inactive: Removed {mid} for {bid}")
                  else: conn.rollback(); print(f"WARN inactive: Delete fail {u['amid']}")
@@ -1056,8 +1128,8 @@ def check_and_remove_inactive_users():
     except Error as dbe: print(f"FATAL inactive DB: {dbe}")
     except Exception as e: print(f"FATAL inactive Gen: {e}"); traceback.print_exc()
     finally:
-        if 'cl' in locals() and cl: cl.close()
         if 'cd' in locals() and cd: cd.close()
+        if 'log_cursor' in locals() and log_cursor: log_cursor.close()
         if cursor: cursor.close()
         if conn: safe_close_connection(conn)
 
@@ -1076,6 +1148,15 @@ else: print("Scheduler not started (debug/reload).")
 def select_package():
     lang=session.get('language','da'); trans=translations.get(lang,translations['da']); sel=session.get('selected_meter')
     conn=None; cursor=None
+    print(f"\n===== START SELECT_PACKAGE (Bruger: {current_user.username}) =====")
+    print(f"DEBUG SELECT_PACKAGE SESSION DATA: {sel}")
+    
+    # Robust tjek om alle nødvendige nøgler findes i session
+    if not sel or 'sensor_id' not in sel or 'start_value' not in sel or 'meter_config_id' not in sel:
+        print(f"DEBUG SELECT_PACKAGE ERROR: Manglende eller ukomplet måler i session. Session indhold: {sel}")
+        flash('Der mangler vigtig information om måleren. Vælg venligst måleren igen.', 'error')
+        session.pop('selected_meter', None)  # Ryd session hvis data er ukomplet
+        return redirect(url_for('select_meter'))
     
     # Hvis der ikke er en valgt måler i sessionen, men brugeren har en aktiv måler i databasen,
     # så hentes måler informationen fra databasen og gemmes i sessionen
@@ -1084,7 +1165,7 @@ def select_package():
             conn=get_db_connection()
             if conn:
                 cursor=conn.cursor(dictionary=True)
-                cursor.execute('SELECT am.meter_id, mc.id as meter_config_id, am.start_value FROM active_meters am JOIN meter_config mc ON am.meter_id = mc.sensor_id WHERE am.booking_id=%s',(current_user.username,))
+                cursor.execute('SELECT meter_id, start_value, package_size FROM active_meters WHERE booking_id=%s',(current_user.username,))
                 active_meter=cursor.fetchone()
                 if active_meter:
                     # Hent målerens displaynavn
@@ -1128,16 +1209,37 @@ def select_package():
             cursor=conn.cursor(dictionary=True); cursor.execute('SELECT * FROM stroem_pakker WHERE id=%s AND aktiv=1',(pid,)); pkg=cursor.fetchone()
             if not pkg: flash('Ugyldig pakke.','error'); raise Exception("Invalid package")
             psize=float(pkg['enheder']); pname=pkg['navn']; cfg_id=sel['meter_config_id']; sid=sel['sensor_id']; start=sel['start_value']
+            
+            print(f"DEBUG SELECT_PACKAGE KØB: Pakke ID={pid}, Størrelse={psize}, Måler ID={sid}, Startværdi={start}")
+            
+            # Double-tjek startværdien ved at hente den direkte igen for at se, om der er forskel
+            sensor_read = sel.get('sensor_read_for_start') or sid
+            print(f"DEBUG SELECT_PACKAGE VERIFIKATION: Henter målerværdi igen for {sensor_read} for at sammenligne")
+            
+            # Ryd cache for sikkerhedens skyld
+            cache.delete(f"meter_value_{sensor_read}")
+            cache.delete(f"meter_value_{normalize_meter_id(sensor_read, True)}")
+            cache.delete(f"meter_value_{normalize_meter_id(sensor_read, False)}")
+            
+            current_value = get_meter_value(sensor_read)
+            print(f"DEBUG SELECT_PACKAGE VERIFIKATION: Original startværdi={start}, Nuværende værdi={current_value}")
+            
+            if current_value is not None and abs(float(start) - float(current_value)) > 0.5:
+                print(f"DEBUG SELECT_PACKAGE ADVARSEL: Stor forskel mellem startværdi ({start}) og nuværende værdi ({current_value})!")
+            
             cursor.execute("SELECT booking_id FROM active_meters WHERE meter_id=%s AND booking_id!=%s",(sid,current_user.username))
             if cursor.fetchone(): flash(trans['meter_already_active'],'error'); session.pop('selected_meter',None); raise Exception("Meter taken")
             mod_cursor = conn.cursor(); mod_cursor.execute("SELECT id, package_size FROM active_meters WHERE booking_id=%s",(current_user.username,)); existing=mod_cursor.fetchone()
+            
             if existing: 
                 # Ved køb af tillægspakke: Læg den nye pakkes enheder oven i de eksisterende
                 current_package_size = float(existing[1])
                 new_package_size = current_package_size + psize
                 mod_cursor.execute("UPDATE active_meters SET meter_id=%s,start_value=%s,package_size=%s WHERE id=%s",(sid,start,new_package_size,existing[0]))
-                print(f"DEBUG: Tillægspakke købt. Gamle enheder: {current_package_size}, Nye enheder: {psize}, Total: {new_package_size}")
-            else: mod_cursor.execute("INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, created_at) VALUES (%s, %s, %s, %s, NOW())",(current_user.username,sid,start,psize))
+                print(f"DEBUG SELECT_PACKAGE UPDATE: Opdaterer eksisterende måler. ID={existing[0]}, Måler={sid}, Start={start}, Ny pakke={new_package_size}")
+            else: 
+                mod_cursor.execute("INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, created_at) VALUES (%s, %s, %s, %s, NOW())",(current_user.username,sid,start,psize))
+                print(f"DEBUG SELECT_PACKAGE INSERT: Indsætter ny måler. Bruger={current_user.username}, Måler={sid}, Start={start}, Pakke={psize}")
             rows_affected = mod_cursor.rowcount; mod_cursor.close()
             if rows_affected > 0:
                  try: # Log (standard cursor)
@@ -1146,6 +1248,7 @@ def select_package():
                      log_cursor.execute('INSERT INTO stroem_koeb (booking_id,pakke_id,maaler_id,enheder_tilbage) VALUES (%s,%s,%s,%s)',(current_user.username,pid,cfg_id,psize))
                      log_cursor.close()
                  except Error as loge: print(f"WARN select_pkg log: {loge}") # Fortsæt selvom log fejler
+                 except Exception as logge: print(f"WARN select_pkg log Gen: {logge}")
                  conn.commit(); session.pop('selected_meter',None); flash(f'Måler {sid} ({sel["display_name"]}) og pakke "{pname}" aktiveret!','success')
                  if cursor: cursor.close(); cursor=None
                  if conn: safe_close_connection(conn); conn=None
@@ -1184,18 +1287,22 @@ def admin_connect_meter():
     meter_id = request.form.get('connect_meter_id')
     package_size = request.form.get('connect_package_size')
     
+    # Validér input
     if not booking_id or not meter_id or not package_size:
         flash('Alle felter skal udfyldes.', 'error')
         return redirect(url_for('admin_login_or_dashboard'))
     
+    # Validér at package_size er et tal
     try:
         package_size = float(package_size)
     except ValueError:
         flash('Antal enheder skal være et tal.', 'error')
         return redirect(url_for('admin_login_or_dashboard'))
     
+    # Initialiser database-variabler
     conn = None
     cursor = None
+    
     try:
         # Opret forbindelse til databasen
         conn = get_db_connection()
@@ -1278,6 +1385,18 @@ def admin_connect_meter():
     
     # Omdiriger til admin dashboard
     return redirect(url_for('admin_login_or_dashboard'))
+
+# Original Flask redirect funktion
+from flask import redirect as flask_redirect
+
+# Override redirect for at tilføje logging
+def redirect(location, **kwargs):
+    print(f"REDIRECT LOG: Omdirigerer til {location}")
+    return flask_redirect(location, **kwargs)
+
+# Erstat Flask's redirect i modulet
+import flask
+flask.redirect = redirect
 
 # --- App Execution ---
 if __name__ == '__main__':
