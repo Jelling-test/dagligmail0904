@@ -66,9 +66,65 @@
                         <div class="form-group row">
                             <div class="col-sm-9 offset-sm-3">
                                 <button type="submit" class="btn btn-primary">Gem Stripe Mode</button>
+                                <input type="hidden" name="form_type" value="stripe_settings">
                             </div>
                         </div>
                     </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Daglig E-mail Rapport -->
+        <div class="col-md-12 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Daglig Salgsrapport</h5>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('system_admin_settings') }}">
+                        <div class="form-group row mb-3">
+                            <label for="daily_report_email" class="col-sm-3 col-form-label">E-mail modtager:</label>
+                            <div class="col-sm-9">
+                                <input type="email" class="form-control" id="daily_report_email" name="daily_report_email" value="{{ settings.daily_report_email }}" placeholder="f.eks. admin@jelling-camping.dk">
+                                <small class="form-text text-muted">E-mail, der skal modtage den daglige salgsrapport. Efterlad tom for at deaktivere.</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row mb-3">
+                            <label for="daily_report_time" class="col-sm-3 col-form-label">Tidspunkt:</label>
+                            <div class="col-sm-9">
+                                <input type="time" class="form-control" id="daily_report_time" name="daily_report_time" value="{{ settings.daily_report_time or '23:59' }}">
+                                <small class="form-text text-muted">Tidspunkt, hvor den daglige rapport skal sendes (24-timers format).</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group row">
+                            <div class="col-sm-9 offset-sm-3">
+                                <button type="submit" class="btn btn-primary">Gem Rapport Indstillinger</button>
+                                <button type="button" class="btn btn-success ms-2" id="send-report-now">Send Rapport Nu</button>
+                            </div>
+                        </div>
+                        <input type="hidden" name="form_type" value="daily_report_settings">
+                    </form>
+                    <script>
+                        document.getElementById('send-report-now').addEventListener('click', function() {
+                            if (confirm('Er du sikker på, at du vil sende en salgsrapport nu?')) {
+                                // Opret skjult formular og send den
+                                var form = document.createElement('form');
+                                form.method = 'POST';
+                                form.action = '{{ url_for("system_admin_settings") }}';
+                                
+                                var input = document.createElement('input');
+                                input.type = 'hidden';
+                                input.name = 'form_type';
+                                input.value = 'send_report_now';
+                                form.appendChild(input);
+                                
+                                document.body.appendChild(form);
+                                form.submit();
+                            }
+                        });
+                    </script>
                 </div>
             </div>
         </div>

@@ -25,11 +25,63 @@ from dotenv import load_dotenv
 load_dotenv()
 print("INFO: Miljøvariabler fra .env fil er indlæst")
 
+# --- Flask App Opsætning ---
+app = Flask(__name__)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'default_secret_key')
+
+# Konfigurér Flask-Mail (e-mail)
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'peter@jellingcamping.dk'
+app.config['MAIL_PASSWORD'] = 'upjaqexllxzibret'  # App password uden mellemrum
+app.config['MAIL_DEFAULT_SENDER'] = 'peter@jellingcamping.dk'  # Hardcoded afsender
+
+# Initialiser mail
+mail = Mail(app)
+
 # --- System Indstillinger og Konstanter ---
 ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'password')
 HASS_URL = os.getenv('HASS_URL')
 HASS_TOKEN = os.getenv('HASS_TOKEN')
+
+# Konfigurer scheduler til daglige rapporter
+scheduler = BackgroundScheduler()
+scheduler.start()
+
+# Funktion til at konfigurere den daglige rapportjob baseret på indstillinger
+def configure_daily_report_job():
+    """Konfigurerer scheduler-jobbet til daglig rapport baseret på de aktuelle indstillinger."""
+    # Ryd alle eksisterende daglige rapport-jobs
+    for job in scheduler.get_jobs():
+        if job.id == 'daily_sales_report':
+            scheduler.remove_job('daily_sales_report')
+            logger.info("Eksisterende daglig rapport job fjernet")
+
+    # Hent de aktuelle indstillinger
+    settings = get_system_settings()
+    email = settings.get('daily_report_email')
+    report_time = settings.get('daily_report_time', '23:59')
+    
+    # Hvis der er konfigureret en e-mailadresse, så opret jobbet
+    if email:
+        # Udled time og minut fra tidspunktet
+        try:
+            hour, minute = map(int, report_time.split(':'))
+            scheduler.add_job(
+                send_daily_sales_report,
+                'cron',
+                hour=hour,
+                minute=minute,
+                id='daily_sales_report',
+                replace_existing=True
+            )
+            logger.info(f"Daglig rapport job konfigureret til at køre kl. {report_time} til {email}")
+        except Exception as e:
+            logger.error(f"Fejl ved konfiguration af daglig rapport job: {e}")
+    else:
+        logger.info("Ingen e-mailadresse konfigureret til daglig rapport - job ikke oprettet")
 
 # Konfigurer logging
 log_level = getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper())
@@ -60,18 +112,15 @@ logger.info("=============== STRØMSTYRING APP STARTER ===============")
 logger.info("Miljøvariabler fra .env fil er indlæst")
 
 # Miljøvariable og konfiguration
-app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', 'en_hemmelig_nøgle_til_udvikling')
 app.config['SESSION_TYPE'] = 'filesystem'
 
 # Opsætning af Flask-Mail
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.example.com')
-app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME', '')
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD', '')
-app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True').lower() in ('true', '1', 't')
-app.config['MAIL_USE_SSL'] = os.getenv('MAIL_USE_SSL', 'False').lower() in ('true', '1', 't')
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv('RECEIPT_SENDER_EMAIL', 'no-reply@example.com')
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USERNAME'] = 'peter@jellingcamping.dk'
+app.config['MAIL_PASSWORD'] = 'upjaqexllxzibret'  # App password uden mellemrum
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_DEFAULT_SENDER'] = 'peter@jellingcamping.dk'  # Hardcoded afsender
 mail = Mail(app)
 
 # Login manager opsætning
@@ -170,7 +219,14 @@ init_db_pool()
 # --- System Indstillinger Funktioner ---
 def get_system_settings():
     """Henter systemindstillinger fra databasen med sikker SQL og fejlhåndtering."""
-    settings = {}
+    settings = {
+        'hass_url': HASS_URL,
+        'hass_token': HASS_TOKEN,
+        'stripe_mode': 'test',  # Standard er test-mode
+        'admin_username': ADMIN_USERNAME,
+        'daily_report_email': '',  # Tom som standard
+        'daily_report_time': '23:59'  # Standard tidspunkt
+    }
     conn = None
     cursor = None
     
@@ -210,7 +266,8 @@ def update_system_setting(key, value):
     try:
         conn = get_db_connection()
         if conn:
-             cursor = conn.cursor()
+             cursor = conn.cursor() # Standard cursor til UPDATE
+
              cursor.execute("REPLACE INTO system_settings (setting_key, value) VALUES (%s, %s)", (key, value))
              conn.commit(); success = True
              cache.delete('system_settings_all')
@@ -382,15 +439,17 @@ def get_formatted_timestamp(format_str=None, tz_name=None):
 def get_configured_meters():
     meters=[]; conn=None; cursor=None
     try:
-        conn=get_db_connection()
-        if not conn: print("ERR get_cfg_meters: No DB conn."); return []
-        cursor=conn.cursor(dictionary=True); cursor.execute('SELECT * FROM meter_config WHERE is_active=1'); meters=cursor.fetchall()
-    except Error as e: print(f"ERR get_cfg_meters (DB): {e}"); meters=[]
-    except Exception as e: print(f"ERR get_cfg_meters (Gen): {e}"); meters=[]
+        cfg=get_configured_meters();
+        if not cfg: return []
+        active=set(); conn=get_db_connection()
+        if conn: cursor=conn.cursor(dictionary=True); cursor.execute("SELECT DISTINCT meter_id FROM active_meters WHERE meter_id IS NOT NULL"); active={r['meter_id'] for r in cursor.fetchall()}
+        meters=[{'id':m['sensor_id'],'name':m.get('display_name') or f"M:{m['sensor_id']}",'location':m.get('location','')} for m in cfg if m['sensor_id'] not in active]
+        return meters
+    except Error as db_e: print(f"ERR get_cfg_meters (DB): {db_e}"); return []
+    except Exception as e: print(f"ERR get_cfg_meters (Gen): {e}"); return []
     finally:
         if cursor: cursor.close()
         if conn: safe_close_connection(conn)
-    return meters
 
 # --- E-mail og Stripe Hjælpefunktioner ---
 def send_purchase_receipt(user_email, user_name, package_name, package_units, price_dkk, purchase_time, meter_display_name):
@@ -427,70 +486,136 @@ def send_purchase_receipt(user_email, user_name, package_name, package_units, pr
         # Log fejlen, men lad resten af processen fortsætte
 
 def send_daily_sales_report():
-    print(f"BG JOB: Daglig salgsrapport start - {datetime.now()}")
+    """Generer og send en daglig salgsrapport med alle køb fra det seneste døgn."""
     conn = None
     cursor = None
-    settings = get_system_settings()
-    admin_email = settings.get('admin_report_email')
-    sender = settings.get('receipt_sender_email', app.config['MAIL_DEFAULT_SENDER'])
-
-    if not admin_email:
-        print("ADVARSEL: Daglig salgsrapport - Admin email ikke konfigureret.")
+    
+    # Hent e-mail-indstillinger fra databasen
+    recipient_email = 'peter@jellingcamping.dk'
+    
+    # Hvis der ikke er konfigureret en modtager-e-mail, så gør ingenting
+    if not recipient_email:
+        logger.info("Daglig rapport: Ingen modtager-e-mail konfigureret, springer over.")
         return
-
+    
     try:
-        conn = get_db_connection()
-        if not conn:
-            print("FEJL: Daglig salgsrapport - DB forbindelse fejlede.")
-            return
-
-        cursor = conn.cursor(dictionary=True)
-        twenty_four_hours_ago = datetime.now() - timedelta(hours=24)
+        logger.info(f"Genererer daglig salgsrapport til {recipient_email}")
         
+        # Opret forbindelse til databasen
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Hent data fra i går til i dag
+        yesterday = datetime.now() - timedelta(days=1)
+        yesterday_str = yesterday.strftime('%Y-%m-%d 00:00:00')
+        now_str = datetime.now().strftime('%Y-%m-%d 23:59:59')
+        
+        # Hent alle køb fra det seneste døgn
         query = """
-            SELECT sk.booking_id, sp.navn as package_name, sp.pris, sk.koebs_tidspunkt
-            FROM stroem_koeb sk
-            JOIN stroem_pakker sp ON sk.pakke_id = sp.id
-            WHERE sk.koebs_tidspunkt >= %s
-            ORDER BY sk.koebs_tidspunkt DESC
+        SELECT pp.id, pp.purchase_date, u.fornavn, u.efternavn, u.email, 
+               p.navn AS package_name, p.enheder, p.pris_dkk, am.meter_id
+        FROM purchased_packages pp
+        LEFT JOIN users u ON pp.user_id = u.id
+        LEFT JOIN power_packages p ON pp.package_id = p.id
+        LEFT JOIN active_meters am ON pp.meter_id = am.meter_id
+        WHERE pp.purchase_date BETWEEN %s AND %s
+        ORDER BY pp.purchase_date DESC
+        """
+        cursor.execute(query, (yesterday_str, now_str))
+        purchases = cursor.fetchall()
+        
+        # Lav statistik
+        total_count = len(purchases)
+        total_amount = sum(purchase['pris_dkk'] for purchase in purchases if purchase['pris_dkk'])
+        
+        # Generer HTML-indhold til e-mail
+        html_content = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; }}
+                h2 {{ color: #2c3e50; }}
+                table {{ border-collapse: collapse; width: 100%; }}
+                th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
+                th {{ background-color: #f2f2f2; color: #333; }}
+                tr:hover {{ background-color: #f5f5f5; }}
+                .summary {{ background-color: #eef; padding: 10px; margin-bottom: 20px; }}
+            </style>
+        </head>
+        <body>
+            <h2>Daglig Salgsrapport - Strøm App</h2>
+            <div class="summary">
+                <p><strong>Periode:</strong> {yesterday.strftime('%d-%m-%Y')} til {datetime.now().strftime('%d-%m-%Y')}</p>
+                <p><strong>Antal køb:</strong> {total_count}</p>
+                <p><strong>Total beløb:</strong> {total_amount:.2f} DKK</p>
+            </div>
         """
         
-        cursor.execute(query, (twenty_four_hours_ago,))
-        sales = cursor.fetchall()
-
-        if not sales:
-            print("INFO: Daglig salgsrapport - Ingen salg i perioden.")
-            return
-
-        total_revenue = sum(float(s['pris']) for s in sales if s.get('pris') is not None)
-
-        if total_revenue <= 0:
-             print("INFO: Daglig salgsrapport - Ingen omsætning i perioden.")
-             return
-
-        # Formater rapport
-        subject = f"Daglig Omsætningsrapport - {datetime.now().strftime('%Y-%m-%d')}"
-        body = f"Omsætningsrapport for {datetime.now().strftime('%Y-%m-%d')}:\n\n"
-        body += f"Total Omsætning: {total_revenue:.2f} DKK\n"
-        body += f"Antal Salg: {len(sales)}\n\nDetaljer:\n"
-        for sale in sales:
-             tid = sale.get('koebs_tidspunkt','Ukendt tid')
-             if isinstance(tid, datetime):
-                 tid = tid.strftime('%H:%M:%S')
-             body += f"- Kl {tid}: {sale.get('booking_id','Ukendt')} købte '{sale.get('package_name','Ukendt pakke')}' ({sale.get('pris', 0.00):.2f} DKK)\n"
-
-        msg = Message(subject=subject, recipients=[admin_email], body=body, sender=sender)
+        if purchases:
+            html_content += """
+            <table>
+                <tr>
+                    <th>Dato</th>
+                    <th>Bruger</th>
+                    <th>E-mail</th>
+                    <th>Pakke</th>
+                    <th>Enheder</th>
+                    <th>Pris (DKK)</th>
+                    <th>Måler-ID</th>
+                </tr>
+            """
+            
+            for purchase in purchases:
+                purchase_date = purchase['purchase_date'].strftime('%d-%m-%Y %H:%M:%S') if purchase['purchase_date'] else 'N/A'
+                user_name = f"{purchase['fornavn']} {purchase['efternavn']}" if purchase['fornavn'] and purchase['efternavn'] else 'N/A'
+                email = purchase['email'] or 'N/A'
+                package_name = purchase['package_name'] or 'N/A'
+                units = f"{purchase['enheder']}" if purchase['enheder'] is not None else 'N/A'
+                price = f"{purchase['pris_dkk']:.2f}" if purchase['pris_dkk'] is not None else 'N/A'
+                meter_id = purchase['meter_id'] or 'N/A'
+                
+                html_content += f"""
+                <tr>
+                    <td>{purchase_date}</td>
+                    <td>{user_name}</td>
+                    <td>{email}</td>
+                    <td>{package_name}</td>
+                    <td>{units}</td>
+                    <td>{price}</td>
+                    <td>{meter_id}</td>
+                </tr>
+                """
+            
+            html_content += "</table>"
+        else:
+            html_content += "<p><em>Ingen køb i perioden.</em></p>"
+        
+        html_content += """
+        <p>Dette er en automatisk genereret e-mail. Venligst svar ikke på denne e-mail.</p>
+        </body>
+        </html>
+        """
+        
+        # Send e-mail
+        msg = Message(
+            subject=f"Elmåler daglig afregning ({datetime.now().strftime('%d-%m-%Y')})",
+            recipients=[recipient_email],
+            html=html_content,
+            sender=app.config['MAIL_DEFAULT_SENDER']
+        )
+        
         mail.send(msg)
-        print(f"INFO: Daglig salgsrapport - Rapport sendt til {admin_email}. Omsætning: {total_revenue:.2f} DKK")
-
-    except Error as dbe:
-        print(f"FATAL: Daglig salgsrapport DB fejl: {dbe}")
+        logger.info(f"Daglig salgsrapport sendt til {recipient_email} med {total_count} køb")
+        
     except Exception as e:
-        print(f"FATAL: Daglig salgsrapport generel fejl: {e}")
-        traceback.print_exc()
+        logger.error(f"Fejl ved generering af daglig salgsrapport: {e}")
+        tb = traceback.format_exc()
+        logger.error(f"Traceback: {tb}")
     finally:
-        if cursor: cursor.close()
-        if conn: safe_close_connection(conn)
+        if cursor:
+            cursor.close()
+        if conn:
+            safe_close_connection(conn)
 
 # Sprog oversættelser
 translations = {
@@ -534,84 +659,105 @@ def load_user(user_id):
 @app.route('/systemkontrolcenter23/settings', methods=['GET', 'POST'])
 @admin_required
 def system_admin_settings():
-    if request.method=='POST':
-        updated=True
+    """Håndter systemadministrationsindstillinger."""
+    message = None
+    message_type = None
+    
+    # Hent aktuelle indstillinger
+    settings = get_system_settings()
+    
+    if request.method == 'POST':
+        # Håndter forskellige formularer baseret på form_type
+        form_type = request.form.get('form_type')
         
-        # Håndter Home Assistant indstillinger
-        hurl=request.form.get('hass_url','').strip(); htok=request.form.get('hass_token','').strip()
-        if hurl and not update_system_setting('hass_url',hurl): updated=False
-        if htok and not update_system_setting('hass_token',htok): updated=False
-        unit_text=request.form.get('unit_text','kWh').strip(); tformat=request.form.get('timestamp_format','%Y-%m-%d %H:%M:%S').strip()
-        try: datetime.now().strftime(tformat)
-        except ValueError: flash(f"Ugyldigt format: '{tformat}'. Bruger std.",'warning'); tformat='%Y-%m-%d %H:%M:%S'
-        if not update_system_setting('unit_text',unit_text): updated=False
-        if not update_system_setting('timestamp_format',tformat): updated=False
+        # Håndter Home Assistant API indstillinger
+        if form_type == 'hass_settings':
+            hass_url = request.form.get('hass_url')
+            hass_token = request.form.get('hass_token')
+            
+            # Gem indstillingerne i databasen
+            update_system_setting('hass_url', hass_url)
+            update_system_setting('hass_token', hass_token)
+            
+            message = 'Home Assistant indstillinger gemt!'
+            message_type = 'success'
         
-        # Håndter Stripe indstillinger (kun mode - nøgler hentes fra .env)
-        stripe_mode = request.form.get('stripe_mode', 'test').strip()
-        if not update_system_setting('stripe_mode', stripe_mode): updated=False
+        # Håndter Stripe indstillinger
+        elif form_type == 'stripe_settings':
+            stripe_mode = request.form.get('stripe_mode')
+            
+            # Gem indstillingen i databasen
+            update_system_setting('stripe_mode', stripe_mode)
+            
+            message = 'Stripe indstillinger gemt!'
+            message_type = 'success'
         
-        # Håndter e-mail indstillinger
-        admin_report_email = request.form.get('admin_report_email', '').strip()
-        receipt_sender_email = request.form.get('receipt_sender_email', '').strip()
-        smtp_host = request.form.get('smtp_host', '').strip()
-        smtp_port = request.form.get('smtp_port', '587').strip()
-        smtp_user = request.form.get('smtp_user', '').strip()
-        smtp_password = request.form.get('smtp_password', '').strip()
-        smtp_use_tls = request.form.get('smtp_use_tls', 'true').strip().lower() == 'true'
-        smtp_use_ssl = request.form.get('smtp_use_ssl', 'false').strip().lower() == 'true'
+        # Håndter daglige rapport indstillinger
+        elif form_type == 'daily_report_settings':
+            daily_report_email = request.form.get('daily_report_email')
+            daily_report_time = request.form.get('daily_report_time')
+            
+            # Gem indstillingerne i databasen
+            update_system_setting('daily_report_email', daily_report_email)
+            update_system_setting('daily_report_time', daily_report_time)
+            
+            # Konfigurer scheduleren igen med de nye indstillinger
+            configure_daily_report_job()
+            
+            message = 'Daglige rapport indstillinger gemt!'
+            message_type = 'success'
+            
+        # Håndter manuel afsendelse af rapport
+        elif form_type == 'send_report_now':
+            try:
+                # Brug den nye sales_report.py funktion
+                from sales_report import send_sales_report_email
+                success, msg = send_sales_report_email()
+                
+                if success:
+                    message = 'Daglig salgsrapport er blevet sendt!'
+                    message_type = 'success'
+                else:
+                    message = f'Der opstod en fejl ved afsendelse af rapporten: {msg}'
+                    message_type = 'danger'
+            except Exception as e:
+                logger.error(f"Fejl ved manuel afsendelse af rapport: {e}")
+                message = f'Der opstod en fejl ved afsendelse af rapporten: {str(e)}'
+                message_type = 'danger'
         
-        # Opdater e-mail indstillinger
-        if admin_report_email and not update_system_setting('admin_report_email', admin_report_email): updated=False
-        if receipt_sender_email and not update_system_setting('receipt_sender_email', receipt_sender_email): updated=False
-        if smtp_host and not update_system_setting('smtp_host', smtp_host): updated=False
-        if smtp_port and not update_system_setting('smtp_port', smtp_port): updated=False
-        if smtp_user and not update_system_setting('smtp_user', smtp_user): updated=False
-        if smtp_password and not update_system_setting('smtp_password', smtp_password): updated=False
-        if not update_system_setting('smtp_use_tls', str(smtp_use_tls).lower()): updated=False
-        if not update_system_setting('smtp_use_ssl', str(smtp_use_ssl).lower()): updated=False
-        
-        global HASS_URL, HASS_TOKEN
-        # Opdater globale variabler
-        if hurl: HASS_URL=hurl; os.environ['HASS_URL']=hurl
-        if htok: HASS_TOKEN=htok; os.environ['HASS_TOKEN']=htok
-        
-        # Opdater Stripe API nøgle hvis ændret
-        if (stripe_mode == 'test' and stripe_keys.get('secret_key')) or (stripe_mode == 'live' and stripe_keys.get('secret_key')):
-            stripe_keys = get_stripe_keys()
-            if stripe_keys.get('secret_key'):
-                stripe.api_key = stripe_keys.get('secret_key')
-                print(f"Stripe API nøgle opdateret til {stripe_keys.get('mode')} mode")
-        
-        # Opdater Mail settings hvis ændret
-        if smtp_host:
-            app.config['MAIL_SERVER'] = smtp_host
-            app.config['MAIL_PORT'] = int(smtp_port)
-            app.config['MAIL_USERNAME'] = smtp_user
-            app.config['MAIL_PASSWORD'] = smtp_password
-            app.config['MAIL_USE_TLS'] = smtp_use_tls
-            app.config['MAIL_USE_SSL'] = smtp_use_ssl
-            app.config['MAIL_DEFAULT_SENDER'] = receipt_sender_email
-            # Geninitialiserer mail med de nye indstillinger
-            mail = Mail(app)
-            print("Mail indstillinger opdateret")
-        
-        if updated: flash('Indstillinger opdateret.','success')
-        else: flash('Fejl ved opdatering.','danger')
-        return redirect(url_for('system_admin_settings'))
-
-    # GET
-    cfg=get_system_settings()
-    display={
-        'hass_url': cfg.get('hass_url',os.getenv('HASS_URL','')), 
-        'hass_token': cfg.get('hass_token',os.getenv('HASS_TOKEN','')), 
-        'admin_username': os.getenv('ADMIN_USERNAME','admin'),
-        'unit_text': cfg.get('unit_text','kWh'),
-        'timestamp_format': cfg.get('timestamp_format','%Y-%m-%d %H:%M:%S'),
-        # Stripe indstillinger
-        'stripe_mode': cfg.get('stripe_mode', os.getenv('STRIPE_MODE', 'test')),
-    }
-    return render_template('admin_system_settings.html', settings=display)
+        # Håndter admin login indstillinger
+        elif form_type == 'admin_settings':
+            admin_username = request.form.get('admin_username')
+            admin_password = request.form.get('admin_password')
+            admin_password_confirm = request.form.get('admin_password_confirm')
+            
+            # Gem brugernavn
+            update_system_setting('admin_username', admin_username)
+            
+            # Hvis der er angivet et nyt password
+            if admin_password:
+                if admin_password != admin_password_confirm:
+                    message = 'Passwords stemmer ikke overens!'
+                    message_type = 'error'
+                else:
+                    # Hash password før det gemmes
+                    hashed_password = generate_password_hash(admin_password)
+                    update_system_setting('admin_password', hashed_password)
+                    message = 'Admin indstillinger opdateret!'
+                    message_type = 'success'
+            else:
+                message = 'Admin brugernavn opdateret!'
+                message_type = 'success'
+    
+    # Opdater settings efter eventuelle ændringer
+    settings = get_system_settings()
+    
+    return render_template(
+        'admin_system_settings.html',
+        settings=settings,
+        message=message,
+        message_type=message_type
+    )
 
 @app.route('/systemkontrolcenter23/test-hass-connection', methods=['POST'])
 @admin_required
@@ -762,10 +908,11 @@ def admin_connect_meter_sys():
         # Hent den aktuelle målerværdi
         current_value = get_meter_value(meter_id) or 0
         
-        # Indsæt måleren i active_meters tabellen
+        # Indsæt i active_meters
+        current_time = get_formatted_timestamp()
         cursor.execute(
-            "INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, created_at) VALUES (%s, %s, %s, %s, NOW())", 
-            (booking_id, meter_id, current_value, package_size)
+            "INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, connection_time) VALUES (%s, %s, %s, %s, %s)",
+            (booking_id, meter_id, current_value, package_size, current_time)
         )
         
         # Log handlingen i stroem_koeb tabellen
@@ -1622,7 +1769,7 @@ def admin_connect_meter():
             return redirect(url_for('admin_login_or_dashboard'))
         
         # Tjek om brugeren findes
-        cursor.execute("SELECT * FROM aktive_bookinger WHERE booking_id = %s", (booking_id,))
+        cursor.execute("SELECT * FROM users WHERE username = %s", (booking_id,))
         if not cursor.fetchone():
             flash('Booking ID findes ikke.', 'error')
             return redirect(url_for('admin_login_or_dashboard'))
@@ -1651,19 +1798,17 @@ def admin_connect_meter():
         
         # Aktivér målerens kontakt, hvis den har en
         try:
-            cursor.execute("SELECT power_switch_id FROM meter_config WHERE sensor_id=%s", (meter_id,))
-            cfg = cursor.fetchone()
-            if cfg and cfg[0]:  # Hvis måler har en kontakt konfigureret
-                psid = cfg[0]
-                if HASS_URL and HASS_TOKEN:
-                    requests.post(
-                        f"{HASS_URL}/api/services/switch/turn_on",
-                        headers={"Authorization": f"Bearer {HASS_TOKEN}"},
-                        json={"entity_id": psid},
-                        timeout=10
-                    )
+            switch_id = meter_config_id
+            if switch_id and HASS_URL and HASS_TOKEN:
+                requests.post(
+                    f"{HASS_URL}/api/services/switch/turn_on",
+                    headers={"Authorization": f"Bearer {HASS_TOKEN}"},
+                    json={"entity_id": switch_id},
+                    timeout=10
+                )
+                logger.info(f"Aktiverede kontakt {switch_id} for måler {meter_id}")
         except Exception as swe:
-            print(f"WARN connect switch: {swe}")
+            logger.warning(f"Kunne ikke aktivere kontakt for måler {meter_id}: {swe}")
         
         # Commit transaktionen
         conn.commit()
@@ -1933,8 +2078,10 @@ def payment_success():
             print(f"Database fejl ved aktivering af pakke: {db_error}")
             flash(f"Der opstod en fejl ved aktivering af din pakke: {str(db_error)}", 'error')
         finally:
-            if cursor: cursor.close()
-            if conn: safe_close_connection(conn)
+            if cursor:
+                cursor.close()
+            if conn:
+                safe_close_connection(conn)
         
         return redirect(url_for('stroem_dashboard'))
     
@@ -2118,13 +2265,10 @@ def _connect_meter_logic(booking_id, meter_id, package_size, redirect_route='adm
             logger.error(f"Forsøg på at tilknytte måler til ikke-eksisterende booking_id: {booking_id}")
             return redirect(url_for(redirect_route))
         
-        # Find meter konfiguration
-        cursor.execute("SELECT * FROM meter_config WHERE sensor_id = %s", (meter_id,))
-        meter_config = cursor.fetchone()
-        if not meter_config:
-            flash('Ugyldig måler-ID angivet - findes ikke i konfigurationen', 'error')
-            logger.error(f"Forsøg på at tilknytte ikke-eksisterende måler {meter_id} til booking {booking_id}")
-            return redirect(url_for(redirect_route))
+        # Find meter_config_id baseret på sensor_id
+        cursor.execute("SELECT id FROM meter_config WHERE sensor_id=%s", (meter_id,))
+        meter_config_result = cursor.fetchone()
+        meter_config_id = meter_config_result[0] if meter_config_result else 0
         
         # Hent den aktuelle målerværdi
         current_value = get_meter_value(meter_id)
@@ -2142,7 +2286,7 @@ def _connect_meter_logic(booking_id, meter_id, package_size, redirect_route='adm
         
         # Aktivér målerens kontakt, hvis den har en
         try:
-            switch_id = meter_config.get('power_switch_id')
+            switch_id = meter_config_id
             if switch_id and HASS_URL and HASS_TOKEN:
                 requests.post(
                     f"{HASS_URL}/api/services/switch/turn_on",
@@ -2151,12 +2295,12 @@ def _connect_meter_logic(booking_id, meter_id, package_size, redirect_route='adm
                     timeout=10
                 )
                 logger.info(f"Aktiverede kontakt {switch_id} for måler {meter_id}")
-        except Exception as e:
-            logger.warning(f"Kunne ikke aktivere kontakt for måler {meter_id}: {e}")
+        except Exception as swe:
+            logger.warning(f"Kunne ikke aktivere kontakt for måler {meter_id}: {swe}")
         
         # Commit transaktionen
         conn.commit()
-        flash(f'Måler {meter_id} er nu tilknyttet booking {booking_id} med {package_size} enheder', 'success')
+        flash(f'Måler {meter_id} er nu tilknyttet booking {booking_id} med {package_size} enheder.', 'success')
         logger.info(f"Måler {meter_id} tilknyttet booking {booking_id} med pakke på {package_size} kWh")
         
     except Error as e:
@@ -2228,3 +2372,39 @@ logger.addHandler(console_handler)
 
 logger.info("=============== STRØMSTYRING APP STARTER ===============")
 logger.info("Miljøvariabler fra .env fil er indlæst")
+
+@app.route('/systemkontrolcenter23/send-daily-report', methods=['GET', 'POST'])
+@admin_required
+def admin_send_daily_report():
+    """Administration endpoint til at sende daglig rapport manuelt."""
+    if request.method == 'POST':
+        try:
+            # Brug den nye sales_report.py funktion
+            from sales_report import send_sales_report_email
+            success, msg = send_sales_report_email()
+            
+            if success:
+                message = 'Daglig salgsrapport er blevet sendt!'
+                message_type = 'success'
+            else:
+                message = f'Der opstod en fejl ved afsendelse af rapporten: {msg}'
+                message_type = 'danger'
+        except Exception as e:
+            logger.error(f"Fejl ved manuel afsendelse af rapport: {e}")
+            message = f'Der opstod en fejl ved afsendelse af rapporten: {str(e)}'
+            message_type = 'danger'
+        
+    # Hent e-mail-indstillinger til visning
+    recipient_email = 'peter@jellingcamping.dk'
+    
+    return render_template('admin_send_report.html', 
+                           daily_report_email=recipient_email)
+
+# Konfigurer scheduleren til daglig rapport, efter alle funktioner er defineret
+configure_daily_report_job()
+
+if __name__ == "__main__":
+    logger.info("Starter Flask app i produktionsmiljø på 0.0.0.0:5000 (Debug: %s)...", os.getenv('FLASK_DEBUG', 'False'))
+    if os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 't', 'y', 'yes'):
+        logger.warning("ADVARSEL: Debug-tilstand bør ikke være aktiveret i produktion!")
+    app.run(host='0.0.0.0', port=5000, debug=(os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 't', 'y', 'yes')))
