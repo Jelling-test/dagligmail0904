@@ -3,6 +3,23 @@
 <div class="container py-4">
   <h1 class="text-center mb-4">{% if session.language == 'en' %}Select Power Package{% elif session.language == 'de' %}Wählen Sie ein Strompaket{% elif session.language == 'nl' %}Selecteer een stroompakket{% elif session.language == 'pl' %}Wybierz pakiet energii{% elif session.language == 'fi' %}Valitse sähköpaketti{% elif session.language == 'fr' %}Choisissez un forfait d'électricité{% else %}Vælg strømpakke{% endif %}</h1>
 
+  <!-- Tilbage-knap -->
+  <div class="row mb-3">
+    <div class="col-md-8 offset-md-2">
+      <a href="{{ url_for('index') }}" class="btn btn-secondary">
+        <i class="fas fa-arrow-left"></i> 
+        {% if session.language == 'en' %}Back to front page
+        {% elif session.language == 'de' %}Zurück zur Startseite
+        {% elif session.language == 'nl' %}Terug naar de voorpagina
+        {% elif session.language == 'pl' %}Powrót do strony głównej
+        {% elif session.language == 'fi' %}Takaisin etusivulle
+        {% elif session.language == 'fr' %}Retour à la page d'accueil
+        {% else %}Tilbage til forsiden
+        {% endif %}
+      </a>
+    </div>
+  </div>
+
   <div class="row">
     <div class="col-md-8 offset-md-2">
       <div class="alert alert-success">
@@ -19,39 +36,39 @@
         
         {% if session.language == 'en' %}
         <p>To activate your power outlet, you need to purchase a power package.</p>
-        <p>A power package automatically expires when you check out or after the selected time.</p>
-        <p>If you need more power, you can purchase add-on packages.</p>
-        <p>An add-on package can only be used in combination with a day package.</p>
+        <p>A power package automatically expires when you check out or when you have used your units.</p>
+        <p>If you need more power, you can purchase more packages.</p>
+        <p>Unused units are not refunded.</p>
         {% elif session.language == 'de' %}
         <p>Um Ihre Steckdose zu aktivieren, müssen Sie ein Strompaket kaufen.</p>
-        <p>Ein Strompaket läuft automatisch ab, wenn Sie auschecken oder nach der gewählten Zeit.</p>
-        <p>Wenn Sie mehr Strom benötigen, können Sie Zusatzpakete kaufen.</p>
-        <p>Ein Zusatzpaket kann nur in Kombination mit einem Tagespaket verwendet werden.</p>
+        <p>Ein Strompaket läuft automatisch ab, wenn Sie auschecken oder wenn Sie Ihre Einheiten verbraucht haben.</p>
+        <p>Wenn Sie mehr Strom benötigen, können Sie weitere Pakete kaufen.</p>
+        <p>Unverbrauchte Einheiten werden nicht erstattet.</p>
         {% elif session.language == 'nl' %}
         <p>Om uw stopcontact te activeren, moet u een stroompakket kopen.</p>
-        <p>Een stroompakket verloopt automatisch bij het uitchecken of na de geselecteerde tijd.</p>
-        <p>Als u meer stroom nodig heeft, kunt u aanvullende pakketten kopen.</p>
-        <p>Een aanvullend pakket kan alleen worden gebruikt in combinatie met een dagpakket.</p>
+        <p>Een stroompakket verloopt automatisch bij het uitchecken of wanneer u uw eenheden heeft verbruikt.</p>
+        <p>Als u meer stroom nodig heeft, kunt u meer pakketten kopen.</p>
+        <p>Ongebruikte eenheden worden niet terugbetaald.</p>
         {% elif session.language == 'pl' %}
         <p>Aby aktywować gniazdko elektryczne, musisz kupić pakiet energetyczny.</p>
-        <p>Pakiet energetyczny wygasa automatycznie przy wymeldowaniu lub po wybranym czasie.</p>
-        <p>Jeśli potrzebujesz więcej energii, możesz kupić dodatkowe pakiety.</p>
-        <p>Dodatkowy pakiet może być używany tylko w połączeniu z pakietem dziennym.</p>
+        <p>Pakiet energetyczny wygasa automatycznie przy wymeldowaniu lub gdy wykorzystasz swoje jednostki.</p>
+        <p>Jeśli potrzebujesz więcej energii, możesz kupić więcej pakietów.</p>
+        <p>Niewykorzystane jednostki nie podlegają zwrotowi.</p>
         {% elif session.language == 'fi' %}
         <p>Aktivoidaksesi pistorasiasi, sinun täytyy ostaa sähköpaketti.</p>
-        <p>Sähköpaketti vanhenee automaattisesti, kun kirjaudut ulos tai valitun ajan jälkeen.</p>
-        <p>Jos tarvitset lisää sähköä, voit ostaa lisäpaketteja.</p>
-        <p>Lisäpakettia voi käyttää vain yhdessä päiväpaketin kanssa.</p>
+        <p>Sähköpaketti vanhenee automaattisesti, kun kirjaudut ulos tai kun olet käyttänyt yksikkösi.</p>
+        <p>Jos tarvitset lisää sähköä, voit ostaa lisää paketteja.</p>
+        <p>Käyttämättömiä yksiköitä ei hyvitetä.</p>
         {% elif session.language == 'fr' %}
         <p>Pour activer votre prise électrique, vous devez acheter un forfait d'électricité.</p>
-        <p>Un forfait d'électricité expire automatiquement lors de votre départ ou après la durée sélectionnée.</p>
+        <p>Un forfait d'électricité expire automatiquement lors de votre départ ou lorsque vous avez utilisé vos unités.</p>
         <p>Si vous avez besoin de plus d'électricité, vous pouvez acheter des forfaits supplémentaires.</p>
-        <p>Un forfait supplémentaire ne peut être utilisé qu'en combinaison avec un forfait journalier.</p>
+        <p>Les unités non utilisées ne sont pas remboursées.</p>
         {% else %}
         <p>For at dit strømudtag skal være aktivt skal du købe en strømpakke.</p>
-        <p>En strømpakke udløber automatisk ved udtjekning eller efter den valgte tid.</p>
-        <p>Har du behov for mere strøm kan du købe tillægspakker.</p>
-        <p>En tillægspakke kan kun bruges i kombination med en dagspakke.</p>
+        <p>En strømpakke udløber automatisk ved udtjekning eller når du har brugt dine enheder.</p>
+        <p>Har du behov for mere strøm kan du købe flere pakker.</p>
+        <p>Ubrugte enheder refunderes ikke.</p>
         {% endif %}
       </div>
 

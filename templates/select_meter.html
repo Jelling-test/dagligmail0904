@@ -37,7 +37,16 @@
                     {% endif %}
                 {% endwith %}
 
-                <button type="submit" class="btn btn-primary btn-lg w-100 mt-4 mb-4" style="font-size: 1.2rem; padding: 15px;">Vælg måler og gå videre</button>
+                <button type="submit" class="btn btn-primary btn-lg w-100 mt-4 mb-4" style="font-size: 1.2rem; padding: 15px;">
+                    {% if session.language == 'en' %}Select meter and continue
+                    {% elif session.language == 'de' %}Zähler auswählen und fortfahren
+                    {% elif session.language == 'nl' %}Selecteer meter en ga verder
+                    {% elif session.language == 'pl' %}Wybierz licznik i kontynuuj
+                    {% elif session.language == 'fi' %}Valitse mittari ja jatka
+                    {% elif session.language == 'fr' %}Sélectionnez le compteur et continuez
+                    {% else %}Vælg måler og gå videre
+                    {% endif %}
+                </button>
             </form>
         </div>
     </div>

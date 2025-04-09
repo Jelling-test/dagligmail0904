@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ translations.confirm_purchase|default('Bekræft køb') }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card mb-4">
+                <div class="card-header bg-primary text-white">
+                    <h2 class="mb-0">{{ translations.confirm_purchase|default('Bekræft dit køb') }}</h2>
+                </div>
+                <div class="card-body">
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                    {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                    {% endif %}
+                    {% endwith %}
+                    
+                    <h4>{{ translations.purchase_details|default('Købsdetaljer') }}</h4>
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <div class="card border-primary">
+                                <div class="card-header bg-primary text-white">
+                                    {{ translations.package_info|default('Pakke information') }}
+                                </div>
+                                <div class="card-body">
+                                    <p><strong>{{ translations.package_name|default('Pakkenavn') }}:</strong> {{ pending.package.navn }}</p>
+                                    <p><strong>{{ translations.units|default('Enheder') }}:</strong> {{ pending.package.enheder }}</p>
+                                    <p><strong>{{ translations.price|default('Pris') }}:</strong> {{ pending.package.pris|round(2) }} DKK</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card border-info">
+                                <div class="card-header bg-info text-white">
+                                    {{ translations.meter_info|default('Målerinformation') }}
+                                </div>
+                                <div class="card-body">
+                                    <p><strong>{{ translations.meter|default('Måler') }}:</strong> {{ pending.meter.display_name }}</p>
+                                    <p><strong>{{ translations.sensor_id|default('Sensor ID') }}:</strong> {{ pending.meter.sensor_id }}</p>
+                                    <p><strong>{{ translations.start_value|default('Startværdi') }}:</strong> {{ pending.meter.start_value }}</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <div class="card border-secondary">
+                                <div class="card-header bg-secondary text-white">
+                                    {{ translations.payment_method|default('Betalingsmetode') }}
+                                </div>
+                                <div class="card-body">
+                                    <p>{{ translations.payment_info|default('Din betaling bliver behandlet sikkert af Stripe. Ved at fortsætte accepterer du vores handelsbetingelser.') }}</p>
+                                    
+                                    <form action="{{ url_for('create_checkout_session') }}" method="POST" class="mt-3">
+                                        <button type="submit" class="btn btn-success btn-lg btn-block">
+                                            <i class="fas fa-credit-card mr-2"></i> {{ translations.proceed_to_payment|default('Fortsæt til betaling') }}
+                                        </button>
+                                    </form>
+                                    
+                                    <div class="mt-3 text-center">
+                                        <a href="{{ url_for('select_package') }}" class="btn btn-outline-secondary">
+                                            <i class="fas fa-arrow-left mr-2"></i> {{ translations.back_to_packages|default('Tilbage til pakkevalg') }}
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 from functools import wraps
 import time
 import traceback
-
+import logging
+from logging.handlers import RotatingFileHandler
+import pytz  # Tilføj pytz til korrekt tidszone-håndtering
 import mysql.connector
 from mysql.connector import Error, pooling
 from mysql.connector.cursor import MySQLCursorDict
@@ -28,6 +30,34 @@ ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'password')
 HASS_URL = os.getenv('HASS_URL')
 HASS_TOKEN = os.getenv('HASS_TOKEN')
+
+# Konfigurer logging
+log_level = getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper())
+log_file = os.getenv('LOG_FILE', 'app.log')
+log_max_size = int(os.getenv('LOG_MAX_SIZE', 10 * 1024 * 1024))  # 10 MB default
+log_backup_count = int(os.getenv('LOG_BACKUP_COUNT', 3))
+
+# Opret logger
+logger = logging.getLogger('stroem_app')
+logger.setLevel(log_level)
+
+# Opret fil-handler
+file_handler = RotatingFileHandler(log_file, maxBytes=log_max_size, backupCount=log_backup_count)
+file_handler.setLevel(log_level)
+file_format = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+file_handler.setFormatter(file_format)
+
+# Opret console-handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(log_level)
+console_handler.setFormatter(file_format)
+
+# Tilføj handlers til logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+logger.info("=============== STRØMSTYRING APP STARTER ===============")
+logger.info("Miljøvariabler fra .env fil er indlæst")
 
 # Miljøvariable og konfiguration
 app = Flask(__name__)
@@ -57,73 +87,122 @@ app.config.from_mapping(cache_config); cache = Cache(app); print(f"Cache: {app.c
 # --- Database Connection Pooling ---
 db_pool = None
 def init_db_pool():
-    global db_pool
+    """Initialiserer databaseforbindelsespool med forbedret fejlhåndtering."""
     try:
-        # Først prøv at rydde op i eventuelle ufrigivne forbindelser ved at genstarte pool
-        if db_pool is not None:
-            print("Lukker eksisterende DB pool for at frigive forbindelser...")
-            db_pool = None
-            
-        pool_config = { 
-            "host": os.getenv('DB_HOST'), 
-            "user": os.getenv('DB_USER'), 
-            "password": os.getenv('DB_PASSWORD'), 
-            "database": os.getenv('DB_NAME'), 
-            "pool_name": os.getenv('DB_POOL_NAME', "flask_pool"), 
-            "pool_size": int(os.getenv('DB_POOL_SIZE', 30)),
-            "pool_reset_session": True, 
+        global db_pool
+        if db_pool is not None and hasattr(db_pool, 'close'):
+            logger.info("Lukker eksisterende database pool før geninitialisering")
+            db_pool.close()
+        
+        db_config = {
+            'host': os.getenv('DB_HOST', 'localhost'),
+            'user': os.getenv('DB_USER', 'root'),
+            'password': os.getenv('DB_PASSWORD', ''),
+            'database': os.getenv('DB_NAME', 'stroemstyring'),
+            'autocommit': True
         }
-        pool_config = {k: v for k, v in pool_config.items() if v is not None}
-        print(f"Initialiserer DB pool '{pool_config.get('pool_name')}' str {pool_config.get('pool_size')}...")
-        db_pool = pooling.MySQLConnectionPool(**pool_config)
+        
+        db_pool = pooling.MySQLConnectionPool(
+            pool_name="stroem_pool",
+            pool_size=5,
+            pool_reset_session=True,
+            **db_config
+        )
+        
+        logger.info("Database pool initialiseret korrekt")
+        
+        # Test forbindelsen
         test_conn = db_pool.get_connection()
-        print(f"Pool Test OK (ID: {test_conn.connection_id}). Frigiver...")
-        test_conn.close()
-        print("DB pool OK.")
-    except Error as e: 
-        print(f"FATAL: DB Pool Init Fejl: {e}")
+        if test_conn.is_connected():
+            logger.info("Database forbindelsestest succesfuld")
+            test_conn.close()
+            return True
+        else:
+            logger.error("Database forbindelsestest fejlede")
+            return False
+            
+    except Error as e:
+        logger.error(f"Fejl ved initialisering af database pool: {e}")
         db_pool = None
-    except Exception as e: 
-        print(f"FATAL: Uventet DB Pool Init Fejl: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Uventet fejl ved initialisering af database pool: {e}")
         db_pool = None
+        return False
 
 def get_db_connection():
-    global db_pool;
-    if db_pool is None: print("ERROR: DB pool ej init."); return None
-    try: conn = db_pool.get_connection(); return conn
-    except Error as e: print(f"Fejl hent DB conn: {e}"); return None
+    """Forbedret databaseforbindelsesfunktion med fejlhåndtering og genoprettelse."""
+    global db_pool
+    max_attempts = 3
+    attempt = 0
+    
+    while attempt < max_attempts:
+        try:
+            if db_pool is None: 
+                logger.error("DB pool er ikke initialiseret")
+                init_db_pool()  # Prøv at geninitialisere
+                if db_pool is None:
+                    return None
+            
+            conn = db_pool.get_connection()
+            return conn
+        except Error as e:
+            logger.error(f"Fejl ved oprettelse af DB forbindelse (forsøg {attempt+1}/{max_attempts}): {e}")
+            attempt += 1
+            if attempt == max_attempts:
+                return None
+            time.sleep(0.5)  # Kort pause før næste forsøg
 
 def safe_close_connection(conn):
+    """Sikker lukning af databaseforbindelse med fejlhåndtering og logging."""
     if conn:
         try: 
             if conn.is_connected():
                 conn.close()
-                return True
-            else:
-                print("Advarsel: Forsøg på at lukke allerede lukket forbindelse")
-        except Error as e: 
-            print(f"Fejl ved lukning af DB forbindelse: {e}")
+                logger.debug("Database forbindelse lukket korrekt")
+        except Error as e:
+            logger.error(f"Fejl ved lukning af DB forbindelse: {e}")
         except Exception as e:
-            print(f"Uventet fejl ved lukning af DB forbindelse: {e}")
-    return False
+            logger.error(f"Uventet fejl ved lukning af DB forbindelse: {e}")
 
 init_db_pool()
 
 # --- System Indstillinger Funktioner ---
 def get_system_settings():
-    settings = cache.get('system_settings_all');
-    if settings is not None: return settings
-    print("DEBUG: Henter sys settings fra DB (cache miss).")
-    settings = {}; conn = None; cursor = None
+    """Henter systemindstillinger fra databasen med sikker SQL og fejlhåndtering."""
+    settings = {}
+    conn = None
+    cursor = None
+    
     try:
         conn = get_db_connection()
-        if conn: cursor = conn.cursor(dictionary=True); cursor.execute("SELECT setting_key, value FROM system_settings"); settings = {r['setting_key']: r['value'] for r in cursor.fetchall()}; cache.set('system_settings_all', settings, timeout=600); print(f"DEBUG: Cachede {len(settings)} sys settings.")
-        else: print("ERROR get_system_settings: No DB conn.")
-    except Error as db_e: print(f"FEJL hent sys settings DB: {db_e}")
-    except Exception as e: print(f"FEJL get_sys settings Gen: {e}")
+        if conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT setting_key, value FROM system_settings")
+            for row in cursor.fetchall():
+                settings[row['setting_key']] = row['value']
+            
+            # Konverter relevante indstillinger til korrekte datatyper
+            for key in settings:
+                if key.endswith('_enabled') or key.endswith('_active'):
+                    settings[key] = settings[key].lower() in ('true', '1', 'yes', 'ja')
+                elif key.endswith('_count') or key.endswith('_limit') or key.endswith('_size'):
+                    try:
+                        settings[key] = int(settings[key])
+                    except ValueError:
+                        logger.warning(f"Kunne ikke konvertere indstilling '{key}' til heltal: {settings[key]}")
+            
+            logger.debug("Systemindstillinger hentet fra database")
+    except Error as e:
+        logger.error(f"Database fejl ved hentning af systemindstillinger: {e}")
+    except Exception as e:
+        logger.error(f"Generel fejl ved hentning af systemindstillinger: {e}")
     finally:
-        if cursor: cursor.close()
-        if conn: safe_close_connection(conn)
+        if cursor:
+            cursor.close()
+        if conn:
+            safe_close_connection(conn)
+            
     return settings
 
 def update_system_setting(key, value):
@@ -153,29 +232,29 @@ def update_system_setting(key, value):
 
 # --- Stripe Konfiguration ---
 def get_stripe_keys():
-    # Direkte debug af miljøvariabler
-    print(f"DEBUG: STRIPE_PUBLISHABLE_KEY_TEST miljøvariabel: '{os.getenv('STRIPE_PUBLISHABLE_KEY_TEST', 'IKKE SAT')}'")
-    print(f"DEBUG: STRIPE_SECRET_KEY_TEST miljøvariabel: '{os.getenv('STRIPE_SECRET_KEY_TEST', 'IKKE SAT')}'")
+    # Check om miljøvariabler er tilgængelige
+    test_publishable = os.getenv('STRIPE_PUBLISHABLE_KEY_TEST')
+    test_secret = os.getenv('STRIPE_SECRET_KEY_TEST')
+    test_webhook = os.getenv('STRIPE_WEBHOOK_SECRET_TEST', '')
     
-    # Midlertidigt hardkodet til test - KUN TIL DEMO/TEST
-    # I en produktionsmiljø ville disse værdier komme fra miljøvariabler
-    test_publishable = "pk_test_rrtorVz0wXEqxZ2xLQq81VMS0095DFsWBk" 
-    test_secret = "sk_test_WvIACW8kIb7ihbWFeCmbJ4wq00l81tBJxx"
-    test_webhook = ""
+    live_publishable = os.getenv('STRIPE_PUBLISHABLE_KEY_LIVE', '')
+    live_secret = os.getenv('STRIPE_SECRET_KEY_LIVE', '')
+    live_webhook = os.getenv('STRIPE_WEBHOOK_SECRET_LIVE', '')
     
-    live_publishable = ""
-    live_secret = ""
-    live_webhook = ""
+    # Check om der er problemer med miljøvariablerne
+    if not test_publishable or not test_secret:
+        print("ADVARSEL: Stripe test nøgler er ikke tilgængelige i miljøvariabler")
+        print("INFO: Bruger hardcodede test-nøgler som fallback (KUN til udvikling)")
+        # Midlertidigt hardkodet til test - KUN TIL DEMO/TEST
+        test_publishable = "pk_test_rrtorVz0wXEqxZ2xLQq81VMS0095DFsWBk" 
+        test_secret = "sk_test_WvIACW8kIb7ihbWFeCmbJ4wq00l81tBJxx"
     
-    # Prøv at hente mode fra databasen, hvis det ikke virker, brug 'test' som standard
-    try:
-        settings = get_system_settings()
-        stripe_mode = settings.get('stripe_mode', 'test').strip().lower()
-    except Exception:
-        # Hvis der er problemer med databasen, brug 'test' mode
-        stripe_mode = 'test'
+    # Vælg nøglesæt baseret på system indstillinger
+    settings = get_system_settings()
+    stripe_mode = settings.get('stripe_mode', os.getenv('STRIPE_MODE', 'test'))
     
-    if stripe_mode == 'live':
+    # Vælg nøglesæt baseret på mode
+    if stripe_mode.lower() == 'live':
         publishable_key = live_publishable
         secret_key = live_secret
         webhook_secret = live_webhook
@@ -184,9 +263,7 @@ def get_stripe_keys():
         secret_key = test_secret
         webhook_secret = test_webhook
     
-    print(f"INFO: Bruger Stripe nøgler til test. Mode: {stripe_mode}")
-    print(f"DEBUG: Publishable Key: '{publishable_key}'")
-    print(f"DEBUG: Secret Key findes: {'JA' if secret_key else 'NEJ'}")
+    print(f"INFO: Bruger Stripe nøgler i {stripe_mode}-mode")
     
     return {
         'publishable_key': publishable_key,
@@ -279,17 +356,28 @@ def get_switch_state(switch_id):
     except requests.exceptions.RequestException as e: print(f"ERR get_switch_state ({switch_id}): {e}"); return "unknown"
     except Exception as e: print(f"ERR get_switch_state gen ({switch_id}): {e}"); return "unknown"
 
-def get_formatted_timestamp(format_str=None):
+def get_formatted_timestamp(format_str=None, tz_name=None):
+    """
+    Returnerer korrekt formateret tidsstempel med tidszone understøttelse.
+    Bruger pytz til korrekt håndtering af tidszoner og DST (sommertid).
+    """
     if not format_str:
-        try:
-            format_str=cache.get('timestamp_format')
-            if not format_str:
-                conn=get_db_connection();
-                if conn: cursor=conn.cursor(dictionary=True); cursor.execute('SELECT value FROM system_settings WHERE setting_key=%s',('timestamp_format',)); setting=cursor.fetchone(); cursor.close(); safe_close_connection(conn); format_str=setting['value'] if setting else '%Y-%m-%d %H:%M:%S'; cache.set('timestamp_format',format_str,timeout=3600)
-                else: format_str='%Y-%m-%d %H:%M:%S'
-        except Exception as e: print(f"WARN timestamp format: {e}"); format_str='%Y-%m-%d %H:%M:%S'
-    try: return datetime.now().strftime(format_str or '%Y-%m-%d %H:%M:%S')
-    except ValueError: print(f"WARN: Ugyldigt timestamp format '{format_str}'. Bruger fallback."); return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        format_str = "%Y-%m-%d %H:%M:%S"
+        
+    # Brug tidszone fra parametre eller indstillinger
+    if not tz_name:
+        settings = get_system_settings()
+        tz_name = settings.get('timezone', 'Europe/Copenhagen')
+        
+    try:
+        tz = pytz.timezone(tz_name)
+        # Få det aktuelle UTC tidspunkt og konverter det til den ønskede tidszone
+        dt = datetime.utcnow().replace(tzinfo=pytz.UTC).astimezone(tz)
+        return dt.strftime(format_str)
+    except Exception as e:
+        logger.error(f"Fejl ved tidszonekonvertering: {e}")
+        # Fallback til lokal tid uden tidszone
+        return datetime.now().strftime(format_str)
 
 def get_configured_meters():
     meters=[]; conn=None; cursor=None
@@ -782,7 +870,7 @@ def admin_remove_meter():
                  elif mid.startswith('sensor.'): base=mid.split('.')[1].split('_')[0]; psid=f"switch.{base}_0"
                  if psid and HASS_URL and HASS_TOKEN: requests.post(f"{HASS_URL}/api/services/switch/turn_off",headers={"Authorization":f"Bearer {HASS_TOKEN}"},json={"entity_id":psid},timeout=10)
             except Exception as swe: print(f"WARN remove switch: {swe}")
-            try: # Log (med korrekte parametre)
+            try: # Log
                  log_cursor=conn.cursor()
                  # FJERN switch_id fra INSERT
                  log_cursor.execute("""INSERT INTO package_logs (booking_id, meter_id, package_name, units_added, admin_action, notes, action_timestamp) VALUES (%s,%s,'Fjernet (Admin)',0,1,%s,NOW())""",(bid,mid,f"Admin remove: {current_user.username}")); log_cursor.close()
@@ -1011,8 +1099,7 @@ def stroem_dashboard():
         if current_value is None:
             error_message = trans['error_reading_meter']; is_meter_online_flag = False; flash(error_message + " Viser startværdi.", 'warning')
             current_value = start_value # Fallback
-            current_value_disp = format_number(current_value) + " (Offline/Fejl)"; start_value_disp = format_number(start_value)
-            total_usage_disp = "0,000"; remaining_disp = format_number(package_size); percentage = 0
+            current_value_disp = format_number(current_value) + " (Offline/Fejl)"; start_value_disp = format_number(start_value); total_usage_disp = "0,000"; remaining_disp = format_number(package_size); percentage = 0
         else:
             is_meter_online_flag = True; total_usage = current_value - start_value;
             if total_usage < 0: total_usage = current_value
@@ -1053,8 +1140,7 @@ def select_meter():
             cursor=conn.cursor(dictionary=True); cursor.execute("SELECT * FROM meter_config WHERE sensor_id=%s AND is_active=1",(mid,)); cfg=cursor.fetchone()
             if not cfg: flash(trans['error_invalid_meter'],'error'); raise Exception(f"No config {mid}")
             cursor.execute("SELECT booking_id FROM active_meters WHERE meter_id=%s AND booking_id!=%s",(mid,current_user.username))
-            if cursor.fetchone(): flash(trans['meter_already_active'],'error'); session.pop('selected_meter',None); raise Exception("Meter taken")
-            
+            if cursor.fetchone(): flash(trans['meter_already_active'],'error'); session.pop('selected_meter', None)  # Ryd session hvis værdien er ugyldig
             # Hent målerværdi fra Home Assistant - Detaljeret fejlsøgning
             sread=cfg.get('energy_sensor_id') or cfg['sensor_id']
             print(f"DEBUG SELECT_METER VIGTIG: Bruger={current_user.username}, Måler ID from form={mid}, Måler ID for læsning={sread}")
@@ -1324,7 +1410,8 @@ def get_available_meters():
 
 # --- Baggrundsjobs ---
 def check_package_status():
-    print(f"BG JOB: check_pkg Start - {datetime.now()}"); conn=None; cursor=None
+    print(f"BG JOB: check_pkg Start - {datetime.now()}")
+    conn=None; cursor=None
     if not HASS_URL or not HASS_TOKEN: print("ERR check_pkg: No HASS cfg."); return
     try:
         conn=get_db_connection()
@@ -1368,7 +1455,8 @@ def check_package_status():
         if conn: safe_close_connection(conn)
 
 def check_and_remove_inactive_users():
-    print(f"BG JOB: inactive Start - {datetime.now()}"); conn=None; cursor=None
+    print(f"BG JOB: inactive Start - {datetime.now()}")
+    conn=None; cursor=None
     if not HASS_URL or not HASS_TOKEN: print("ERR inactive: No HASS cfg."); return
     try:
         conn=get_db_connection()
@@ -1547,10 +1635,11 @@ def admin_connect_meter():
         # Hent den aktuelle målerværdi
         current_value = get_meter_value(meter_id) or 0
         
-        # Indsæt måleren i active_meters tabellen
+        # Indsæt i active_meters
+        current_time = get_formatted_timestamp()
         cursor.execute(
-            "INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, created_at) VALUES (%s, %s, %s, %s, NOW())", 
-            (booking_id, meter_id, current_value, package_size)
+            "INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, connection_time) VALUES (%s, %s, %s, %s, %s)",
+            (booking_id, meter_id, current_value, package_size, current_time)
         )
         
         # Log handlingen i stroem_koeb tabellen
@@ -1579,27 +1668,22 @@ def admin_connect_meter():
         # Commit transaktionen
         conn.commit()
         flash(f'Måler {meter_id} er nu tilknyttet booking {booking_id} med {package_size} enheder.', 'success')
+        logger.info(f"Måler {meter_id} tilknyttet booking {booking_id} med pakke på {package_size} kWh")
         
-    except Error as dbe:
-        # Håndter database-fejl
-        print(f"ERR connect_meter DB: {dbe}")
-        flash(f'Database fejl: {dbe}', 'error')
-        if conn:
-            conn.rollback()
+    except Error as e:
+        logger.error(f"Fejl ved initialisering af database pool: {e}")
+        db_pool = None
+        return False
     except Exception as e:
-        # Håndter generelle fejl
-        print(f"ERR connect_meter Gen: {e}")
-        flash(f'Fejl: {str(e)}', 'error')
-        if conn:
-            conn.rollback()
+        logger.error(f"Uventet fejl ved initialisering af database pool: {e}")
+        db_pool = None
+        return False
     finally:
-        # Oprydning
         if cursor:
             cursor.close()
         if conn:
             safe_close_connection(conn)
     
-    # Omdiriger til admin dashboard
     return redirect(url_for('admin_login_or_dashboard'))
 
 # Original Flask redirect funktion
@@ -1968,5 +2052,179 @@ def start_purchase():
     return redirect(url_for('stroem_dashboard'))
 
 if __name__ == '__main__':
-    print("Starter Flask app...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Brug miljøvariabler til at styre app-konfiguration
+    debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
+    flask_env = os.getenv('FLASK_ENV', 'production')
+    port = int(os.getenv('FLASK_PORT', 5000))
+    
+    # Sikkerhedskonfiguration baseret på miljø
+    if flask_env == 'development':
+        host = '127.0.0.1'  # Localhost-only i udvikling
+        print(f"Starter Flask app i udviklingsmiljø på {host}:{port} (Debug: {debug_mode})...")
+    else:
+        host = os.getenv('FLASK_HOST', '0.0.0.0')  # Konfigurérbart i produktion
+        print(f"Starter Flask app i produktionsmiljø på {host}:{port} (Debug: {debug_mode})...")
+        
+        # I produktion bør debug altid være slået fra
+        if debug_mode:
+            print("ADVARSEL: Debug-tilstand bør ikke være aktiveret i produktion!")
+    
+    app.run(host=host, port=port, debug=debug_mode)
+
+def _connect_meter_logic(booking_id, meter_id, package_size, redirect_route='admin_login_or_dashboard'):
+    """
+    Fælles logik for at tilknytte en måler til en booking.
+    Implementerer robust fejlhåndtering og sikkerhedstjek.
+    """
+    if not booking_id or not meter_id:
+        flash('Booking ID og Måler ID er påkrævede', 'error')
+        logger.error(f"Forsøg på at tilknytte måler uden gyldigt booking_id ({booking_id}) eller meter_id ({meter_id})")
+        return redirect(url_for(redirect_route))
+    
+    conn = None
+    cursor = None
+    try:
+        # Validér input
+        try:
+            package_size = float(package_size)
+            if package_size <= 0:
+                flash('Pakkestørrelse skal være større end 0', 'error')
+                return redirect(url_for(redirect_route))
+        except (ValueError, TypeError):
+            flash('Ugyldig pakkestørrelse angivet', 'error')
+            logger.error(f"Ugyldig pakkestørrelse angivet: {package_size}")
+            return redirect(url_for(redirect_route))
+            
+        conn = get_db_connection()
+        if not conn:
+            flash('Kunne ikke oprette forbindelse til databasen', 'error')
+            logger.error("Database forbindelse fejlede ved tilknytning af måler")
+            return redirect(url_for(redirect_route))
+            
+        cursor = conn.cursor(dictionary=True)
+        
+        # Tjek om måleren allerede er aktiv på en anden booking
+        cursor.execute("SELECT booking_id FROM active_meters WHERE meter_id = %s", (meter_id,))
+        existing = cursor.fetchone()
+        if existing:
+            flash(f'Måler er allerede aktiv på booking {existing["booking_id"]}', 'error')
+            logger.warning(f"Forsøg på at tilknytte allerede aktiv måler {meter_id} til booking {booking_id}")
+            return redirect(url_for(redirect_route))
+            
+        # Tjek om brugeren findes
+        cursor.execute("SELECT * FROM users WHERE username = %s", (booking_id,))
+        if not cursor.fetchone():
+            flash('Booking ID findes ikke i bruger-databasen', 'error')
+            logger.error(f"Forsøg på at tilknytte måler til ikke-eksisterende booking_id: {booking_id}")
+            return redirect(url_for(redirect_route))
+        
+        # Find meter konfiguration
+        cursor.execute("SELECT * FROM meter_config WHERE sensor_id = %s", (meter_id,))
+        meter_config = cursor.fetchone()
+        if not meter_config:
+            flash('Ugyldig måler-ID angivet - findes ikke i konfigurationen', 'error')
+            logger.error(f"Forsøg på at tilknytte ikke-eksisterende måler {meter_id} til booking {booking_id}")
+            return redirect(url_for(redirect_route))
+        
+        # Hent den aktuelle målerværdi
+        current_value = get_meter_value(meter_id)
+        if current_value is None:
+            logger.warning(f"Kunne ikke læse værdi fra måler {meter_id} - bruger 0 som startværdi")
+            flash('Kunne ikke læse målerværdi - bruger 0 som startværdi', 'warning')
+            current_value = 0
+            
+        # Indsæt i active_meters
+        current_time = get_formatted_timestamp()
+        cursor.execute(
+            "INSERT INTO active_meters (booking_id, meter_id, start_value, package_size, connection_time) VALUES (%s, %s, %s, %s, %s)",
+            (booking_id, meter_id, current_value, package_size, current_time)
+        )
+        
+        # Aktivér målerens kontakt, hvis den har en
+        try:
+            switch_id = meter_config.get('power_switch_id')
+            if switch_id and HASS_URL and HASS_TOKEN:
+                requests.post(
+                    f"{HASS_URL}/api/services/switch/turn_on",
+                    headers={"Authorization": f"Bearer {HASS_TOKEN}"},
+                    json={"entity_id": switch_id},
+                    timeout=10
+                )
+                logger.info(f"Aktiverede kontakt {switch_id} for måler {meter_id}")
+        except Exception as e:
+            logger.warning(f"Kunne ikke aktivere kontakt for måler {meter_id}: {e}")
+        
+        # Commit transaktionen
+        conn.commit()
+        flash(f'Måler {meter_id} er nu tilknyttet booking {booking_id} med {package_size} enheder', 'success')
+        logger.info(f"Måler {meter_id} tilknyttet booking {booking_id} med pakke på {package_size} kWh")
+        
+    except Error as e:
+        logger.error(f"Database fejl ved tilknytning af måler: {e}")
+        flash(f'Databasefejl ved tilknytning af måler: {e}', 'error')
+        if conn:
+            conn.rollback()
+    except Exception as e:
+        logger.error(f"Uventet fejl ved tilknytning af måler: {e}")
+        flash('Der opstod en uventet fejl ved tilknytning af måleren', 'error')
+        if conn:
+            conn.rollback()
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            safe_close_connection(conn)
+    
+    return redirect(url_for(redirect_route))
+
+@app.route('/admin_connect_meter', methods=['POST'])
+@admin_required
+def admin_connect_meter():
+    """Funktion til at forbinde en måler til en booking."""
+    # Hent formulardata
+    booking_id = request.form.get('connect_booking_id')
+    meter_id = request.form.get('connect_meter_id')
+    package_size = request.form.get('connect_package_size')
+    
+    # Brug den fælles logik
+    return _connect_meter_logic(booking_id, meter_id, package_size)
+
+@app.route('/systemkontrolcenter23/connect-meter', methods=['POST'])
+@admin_required
+def admin_connect_meter_sys():
+    """Funktion til at forbinde en måler til en booking."""
+    # Hent formulardata
+    booking_id = request.form.get('connect_booking_id')
+    meter_id = request.form.get('connect_meter_id')
+    package_size = request.form.get('connect_package_size')
+    
+    # Brug den fælles logik
+    return _connect_meter_logic(booking_id, meter_id, package_size)
+
+# Konfigurer logging
+log_level = getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper())
+log_file = os.getenv('LOG_FILE', 'app.log')
+log_max_size = int(os.getenv('LOG_MAX_SIZE', 10 * 1024 * 1024))  # 10 MB default
+log_backup_count = int(os.getenv('LOG_BACKUP_COUNT', 3))
+
+# Opret logger
+logger = logging.getLogger('stroem_app')
+logger.setLevel(log_level)
+
+# Opret fil-handler
+file_handler = RotatingFileHandler(log_file, maxBytes=log_max_size, backupCount=log_backup_count)
+file_handler.setLevel(log_level)
+file_format = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+file_handler.setFormatter(file_format)
+
+# Opret console-handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(log_level)
+console_handler.setFormatter(file_format)
+
+# Tilføj handlers til logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+logger.info("=============== STRØMSTYRING APP STARTER ===============")
+logger.info("Miljøvariabler fra .env fil er indlæst")

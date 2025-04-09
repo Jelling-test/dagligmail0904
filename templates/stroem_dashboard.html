@@ -43,11 +43,11 @@
                         <p class="mb-2">
                             <strong>Status: </strong>
                             {% if power_switch_state == 'on' %}
-                                <span class="text-success">Tændt</span>
+                                <span class="text-success">{% if session.language == 'en' %}On{% elif session.language == 'de' %}Ein{% elif session.language == 'nl' %}Aan{% elif session.language == 'pl' %}Włączony{% elif session.language == 'fi' %}Päällä{% elif session.language == 'fr' %}Allumé{% else %}Tændt{% endif %}</span>
                             {% elif power_switch_state == 'off' %}
-                                <span class="text-danger">Slukket</span>
+                                <span class="text-danger">{% if session.language == 'en' %}Off{% elif session.language == 'de' %}Aus{% elif session.language == 'nl' %}Uit{% elif session.language == 'pl' %}Wyłączony{% elif session.language == 'fi' %}Pois päältä{% elif session.language == 'fr' %}Éteint{% else %}Slukket{% endif %}</span>
                             {% else %}
-                                <span class="text-secondary">Ukendt</span>
+                                <span class="text-secondary">{% if session.language == 'en' %}Unknown{% elif session.language == 'de' %}Unbekannt{% elif session.language == 'nl' %}Onbekend{% elif session.language == 'pl' %}Nieznany{% elif session.language == 'fi' %}Tuntematon{% elif session.language == 'fr' %}Inconnu{% else %}Ukendt{% endif %}</span>
                             {% endif %}
                         </p>
                         <div class="d-flex justify-content-between">
@@ -55,19 +55,33 @@
                                 <input type="hidden" name="action" value="on">
                                 <input type="hidden" name="switch_id" value="{{ power_switch_id }}">
                                 <button type="submit" class="btn btn-success w-100 {% if power_switch_state == 'on' %}disabled{% endif %}">
-                                    <i class="fas fa-power-off"></i> Tænd
+                                    <i class="fas fa-power-off"></i> {% if session.language == 'en' %}Turn on{% elif session.language == 'de' %}Einschalten{% elif session.language == 'nl' %}Aanzetten{% elif session.language == 'pl' %}Włącz{% elif session.language == 'fi' %}Kytke päälle{% elif session.language == 'fr' %}Allumer{% else %}Tænd{% endif %}
                                 </button>
                             </form>
                             <form action="{{ url_for('toggle_power') }}" method="POST" class="w-100 ms-2">
                                 <input type="hidden" name="action" value="off">
                                 <input type="hidden" name="switch_id" value="{{ power_switch_id }}">
                                 <button type="submit" class="btn btn-danger w-100 {% if power_switch_state == 'off' %}disabled{% endif %}">
-                                    <i class="fas fa-power-off"></i> Sluk
+                                    <i class="fas fa-power-off"></i> {% if session.language == 'en' %}Turn off{% elif session.language == 'de' %}Ausschalten{% elif session.language == 'nl' %}Uitzetten{% elif session.language == 'pl' %}Wyłącz{% elif session.language == 'fi' %}Kytke pois{% elif session.language == 'fr' %}Éteindre{% else %}Sluk{% endif %}
                                 </button>
                             </form>
                         </div>
                         <div class="mt-2 small text-center text-muted">
+                            {% if session.language == 'en' %}
+                            For security reasons, you need to reload your browser to activate a button again
+                            {% elif session.language == 'de' %}
+                            Aus Sicherheitsgründen müssen Sie Ihren Browser neu laden, um eine Taste wieder zu aktivieren
+                            {% elif session.language == 'nl' %}
+                            Vanwege veiligheidsredenen moet u uw browser opnieuw laden om een knop opnieuw te activeren
+                            {% elif session.language == 'pl' %}
+                            Ze względów bezpieczeństwa musisz odświeżyć przeglądarkę, aby ponownie aktywować przycisk
+                            {% elif session.language == 'fi' %}
+                            Turvallisuussyistä sinun on ladattava selaimesi uudelleen aktivoidaksesi painikkeen uudelleen
+                            {% elif session.language == 'fr' %}
+                            Pour des raisons de sécurité, vous devez recharger votre navigateur pour activer à nouveau un bouton
+                            {% else %}
                             Grundet sikkerhed skal du genindlæse din browser for at du kan aktivere en knap igen
+                            {% endif %}
                         </div>
                     </div>
                 </div>
@@ -100,11 +114,26 @@
                     
                     <div class="text-center mt-3">
                         <a href="{{ url_for('start_purchase') }}" class="btn btn-primary">
-                            Køb tillægspakke
+                            {% if session.language == 'en' %}Buy additional package
+                            {% elif session.language == 'de' %}Zusätzliches Paket kaufen
+                            {% elif session.language == 'nl' %}Extra pakket kopen
+                            {% elif session.language == 'pl' %}Kup dodatkowy pakiet
+                            {% elif session.language == 'fi' %}Osta lisäpaketti
+                            {% elif session.language == 'fr' %}Acheter un forfait supplémentaire
+                            {% else %}Køb tillægspakke
+                            {% endif %}
                         </a>
                         <div class="mt-2">
                             <a href="{{ url_for('index') }}" class="btn btn-secondary">
-                                <i class="fas fa-home"></i> Tilbage til forsiden
+                                <i class="fas fa-home"></i> 
+                                {% if session.language == 'en' %}Back to front page
+                                {% elif session.language == 'de' %}Zurück zur Startseite
+                                {% elif session.language == 'nl' %}Terug naar de voorpagina
+                                {% elif session.language == 'pl' %}Powrót do strony głównej
+                                {% elif session.language == 'fi' %}Takaisin etusivulle
+                                {% elif session.language == 'fr' %}Retour à la page d'accueil
+                                {% else %}Tilbage til forsiden
+                                {% endif %}
                             </a>
                         </div>
                     </div>
